@@ -1,4 +1,4 @@
-# Source this to gen raw data
+# Source this for functions to gen raw data
 
 rm(list = ls())
 gc()
@@ -48,7 +48,7 @@ link_students <- function(){
     select(system_key, uw_netid, student_name_lowc) %>%
     collect() %>%
     # correction(s) necessary for compatability
-    mutate_if(is.character, str_remove_all, pattern = " ")
+    mutate_if(is.character, str_replace_all, pattern = " ", replacement = "")
 
   # try multiple ways of merging since regid is not accessible w/o dev token to SWS
   by_netid <- db %>% inner_join(skeys, by = c('uw_netid' = 'login_id')) %>%
@@ -141,12 +141,15 @@ link_enrollments <- function(){
   return(res)
 }
 
-# fetch raw SDB data ------------------------------------------------------
+# funs fetch raw SDB data ------------------------------------------------------
+# in principle, don't return collected data by default, think of these are pre-defined CTEs
+# may or may not be needed for different analyses; track branching analyses w/ MLFlow?
 
-# push temp filtering tables
+# push temp filtering tables and save a local reference so we don't need the name of the temp table
 canvas_filter <- link_students() %>% copy_to(con, ., overwrite = T)
 
-get_cal <- function(con = con){
+# fetch calendar weeks
+get_cal <- function(){
   res <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
     filter(AcademicYrQtrCode >= yrq.min,
            AcademicYrQtrCode <= yrq.max) %>%
@@ -160,11 +163,14 @@ get_cal <- function(con = con){
   return(res)
 }
 
-get_mm_stu <- function(){
+# fetch frozen rep of students from census day (default) or first day (=1). 3 is also a valid option but unlikely
+# to be used for current case
+get_mm_census <- function(indicator = 2){
   ymin <- yrq.min %/% 10
   sr_mm <- tbl(con, in_schema('sec', 'sr_mini_master')) %>%
+    semi_join(canvas_filter, by = c('mm_system_key' = 'system_key')) %>%
     filter(mm_year >= ymin,
-           mm_proc_ind == 2) %>%
+           mm_proc_ind == indicator) %>%
     select(mm_year,
            mm_qtr,
            mm_student_no,
@@ -209,14 +215,12 @@ get_mm_stu <- function(){
     left_join(cip_stem, by = c('mm_maj_cip_code' = 'CIPCode')) %>%
     left_join(unmet_reqs, by = c('mm_system_key' = 'unmet_system_key',
                                  'mm_year' = 'unmet_yr',
-                                 'mm_qtr' = 'unmet_qtr')) %>%
-    collect()
-
+                                 'mm_qtr' = 'unmet_qtr'))
   return(res)
 }
 
-get_stu_1 <- function(con = con){
-  # this will also get the current quarter's census day registration
+
+get_stu_1 <- function(){
   ymin <- yrq.min %/% 10
   st1 <- tbl(con, in_schema('sec', 'student_1')) %>%
     filter(last_yr_enrolled >= ymin) %>%
@@ -242,33 +246,190 @@ get_stu_1 <- function(con = con){
            hs_for_lang_yrs,
            hs_math_level)
 
+  res <- st1 %>%
+    semi_join(canvas_filter, by = c('system_key' = 'system_key')) %>%
+    inner_join(st2)
+
+  return(res)
 }
 
 # may not be required since mm_ will get current if past census day
 # there are other circumstances where this could be a useful query
 get_current_registration <- function(){
-  # current: registration
-  # this_qtr <- tbl(con, in_schema('sec', 'sdbdb01'))
-
   reg <- tbl(con, in_schema('sec', 'registration')) %>%
     semi_join(tbl(con, in_schema('sec', 'sdbdb01')),
                by = c('regis_yr' = 'current_yr',
                      'regis_qtr' = 'current_qtr')) %>%
+    semi_join(canvas_filter) %>%
     select(system_key,
            regis_yr,
            regis_qtr,
            regis_class,
            tenth_day_credits,
            current_credits)
-    collect()
 
   return(reg)
 }
 
-# for some students, get transcripts and current-qtr registration
+get_current_reg_courses <- function(){
+  res <- tbl(con, in_schema('sec', 'registration_courses')) %>%
+    semi_join(tbl(con, in_schema('sec', 'sdbdb01')),
+              by = c('regis_yr' = 'current_yr',
+                     'regis_qtr' = 'current_qtr')) %>%
+    semi_join(canvas_filter) %>%
+    select(system_key,
+           regis_yr,
+           regis_qtr,
+           index1,
+           sln,
+           credits,
+           grading_system,
+           course_branch,
+           honor_course,
+           dup_enroll,
+           `repeat`,
+           writing_ind,
+           crs_curric_abbr,
+           crs_number,
+           crs_section_id,
+           request_status,
+           crs_fee_amt)
+
+  return(res)
+}
+
+# get transcripts
 get_transcript <- function(){
   # past: transcript
-  tr <- tbl(con, in_schema('sec', 'transcript')) %>% filter(tran_yr == 2020, tran_qtr == 1) %>% collect()
+  # current reg is today's (current quarter) information
+  tr <- tbl(con, in_schema('sec', 'transcript')) %>%
+    semi_join(canvas_filter) %>%
+    select(system_key,
+           tran_yr,
+           tran_qtr,
+           resident,
+           class,
+           special_program,
+           honors_program,
+           tenth_day_credits,
+           num_courses,
+           enroll_status,
+           add_to_cum,
+           qtr_grade_points,
+           qtr_graded_attmp,
+           qtr_nongrd_earned,
+           qtr_deductible,
+           over_qtr_grade_pt,
+           over_qtr_grade_at,
+           over_qtr_nongrd,
+           over_qtr_deduct)
+
+  mjr1 <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
+    semi_join(canvas_filter) %>%
+    filter(index1 == 1) %>%
+    select(system_key,
+           tran_yr,
+           tran_qtr,
+           tran_major_abbr)
+
+  mjr2 <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
+    semi_join(canvas_filter) %>%
+    filter(index1 == 2) %>%
+    select(system_key,
+           tran_yr,
+           tran_qtr,
+           tran_major_abbr2 = tran_major_abbr)
+
+  nmjrs <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
+    semi_join(canvas_filter) %>%
+    group_by(system_key,
+             tran_yr,
+             tran_qtr) %>%
+    # summarize(n_majors = max(index1, na.rm = T)) %>%
+    filter(index1 == max(index1)) %>%
+    select(system_key,
+           tran_yr,
+           tran_qtr,
+           n_majors = index1) %>%
+    ungroup()
+
+  res <- tr %>%
+    left_join(mjr1) %>%
+    left_join(mjr2) %>%
+    left_join(nmjrs)
+
+  return(res)
+}
+
+get_tran_courses <- function(){
+  crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
+    semi_join(canvas_filter) %>%
+    select(system_key,
+           tran_yr,
+           tran_qtr,
+           index1,
+           dept_abbrev,
+           course_number,
+           section_id,
+           course_credits,
+           course_branch,
+           grade_system,
+           grade,
+           duplicate_indic,
+           deductible,
+           honor_course,
+           incomplete,
+           repeat_course,
+           writing)
+
+  return(crs)
+
+}
+
+x <- get_tran_courses() %>% collect()
+
+# fetch facts from EDW (may want to use these calculated vals)
+get_stu_prog_enr <- function(){
+
+  stu_id <- canvas_filter %>%
+    tbl(con, in_schema('EDWPresentation.sec', 'dimStudent')) %>%
+    select(StudentKeyId,
+           SDBSrcSystemKey) %>%
 
 
+
+  cal_id <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
+    filter(AcademicQtrCensusDayInd == 'Y') %>%
+    select(CalendarDateKeyId,
+           AcademicQtrKeyId,
+           AcademicFiscalYr,
+           AcademicQtr)
+
+  res <- tbl(con, in_schema('EDWPresentation.sec', 'factStudentProgramEnrollment')) %>%
+    semi_join(canvas_filter) %>%
+    inner_join(cal_id) %>%
+    select(AcademicQtrKeyId,
+           AcademicFiscalYr,
+           AcademicQtr,
+           StudentKeyId,
+           MajorKeyId,
+           CumAddtnlAppliedCredits,
+           CumAddtnlCredits,
+           CumDeductibleCredits,
+           CumGPA,
+           CumGPACredits,
+           CumGPAGradePoints,
+           CumEnrolledQtrs,
+           CumNonGradedEarnedCredits,
+           CumTotalEarnedCredits,
+           CumTotalTransferCredits,
+           CumUWCredits,
+           CurrQtrClassLevelFTE,
+           CurrQtrCredits,
+           FullTimeInd,
+           MultiMajorInd,
+           StudentEnrolledCnt,
+           StudentRegisteredCnt)
+
+  return(res)
 }
