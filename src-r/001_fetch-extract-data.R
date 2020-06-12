@@ -183,7 +183,7 @@ get_mm_census <- function(indicator = 2){
 
   sr_mm_deg <- tbl(con, in_schema('sec', 'sr_mini_master_deg_program')) %>%
     filter(index1 <= 1,
-           mm_proc_ind == 2) %>%
+           mm_proc_ind == indicator) %>%
     select(mm_year,
            mm_qtr,
            mm_student_no,
@@ -223,6 +223,7 @@ get_mm_census <- function(indicator = 2){
 get_stu_1 <- function(){
   ymin <- yrq.min %/% 10
   st1 <- tbl(con, in_schema('sec', 'student_1')) %>%
+    semi_join(canvas_filter, by = c('system_key' = 'system_key')) %>%
     filter(last_yr_enrolled >= ymin) %>%
     select(system_key,
            student_no,
@@ -247,7 +248,6 @@ get_stu_1 <- function(){
            hs_math_level)
 
   res <- st1 %>%
-    semi_join(canvas_filter, by = c('system_key' = 'system_key')) %>%
     inner_join(st2)
 
   return(res)
@@ -386,32 +386,37 @@ get_tran_courses <- function(){
 
 }
 
-x <- get_tran_courses() %>% collect()
-
 # fetch facts from EDW (may want to use these calculated vals)
 get_stu_prog_enr <- function(){
 
-  stu_id <- canvas_filter %>%
-    tbl(con, in_schema('EDWPresentation.sec', 'dimStudent')) %>%
+  stu_id <- tbl(con, in_schema('EDWPresentation.sec', 'dimStudent')) %>%
     select(StudentKeyId,
            SDBSrcSystemKey) %>%
-
-
+    semi_join(canvas_filter, by = c('SDBSrcSystemKey' = 'system_key'))
 
   cal_id <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-    filter(AcademicQtrCensusDayInd == 'Y') %>%
+    # filter(AcademicQtrCensusDayInd == 'Y') %>%
     select(CalendarDateKeyId,
            AcademicQtrKeyId,
            AcademicFiscalYr,
-           AcademicQtr)
+           AcademicQtr,
+           AcademicQtrCensusDayInd,
+           AcademicQtrBeginInd,
+           AcademicQtrLastInstructionDayInd)
 
+  # This is a mess this doesn't really support a student-centered view like transcripts b/c
+  # anyone not enrolled on one of the 3 specific dates won't show up
   res <- tbl(con, in_schema('EDWPresentation.sec', 'factStudentProgramEnrollment')) %>%
-    semi_join(canvas_filter) %>%
+    inner_join(stu_id) %>%
     inner_join(cal_id) %>%
     select(AcademicQtrKeyId,
            AcademicFiscalYr,
            AcademicQtr,
+           AcademicQtrCensusDayInd,
+           AcademicQtrBeginInd,
+           AcademicQtrLastInstructionDayInd,
            StudentKeyId,
+           SDBSrcSystemKey,
            MajorKeyId,
            CumAddtnlAppliedCredits,
            CumAddtnlCredits,
