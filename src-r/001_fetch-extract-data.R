@@ -19,7 +19,7 @@ con <- dbConnect(odbc(), 'sqlserver01')
 # read local data ---------------------------------------------------------
 
 pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv')
-assgn <- read_csv('data-raw/weekly_assignments_wide_2020-05-13.csv')
+assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv')
 urls <- read_csv('data-raw/weekly_url_count_wide.csv')
 # explore how to merge these later
 
