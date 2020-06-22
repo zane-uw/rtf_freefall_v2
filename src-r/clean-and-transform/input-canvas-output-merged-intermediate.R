@@ -108,23 +108,56 @@ rm(accum, finpct, long.assgn, zero.pt.crss)
 # transfrom page views ----------------------------------------------------
 
 pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv')
-# repair names
-names(pv) <- c('yrq',
-               'user_id',
-               'course_id',
-               'views_wk07',
-               'views_wk08',
-               'views_wk09',
-               'views_wk10',
-               'views_wk11',
-               'views_wk12',
-               'views_wk01',
-               'views_wk02',
-               'views_wk03',
-               'views_wk04',
-               'views_wk05',
-               'views_wk06')
-pv <- pv %>% mutate_all(replace_na, 0)
+# xform to long, calculate fields, repair names, back to wide
+pv <- pv %>%
+  pivot_longer(-c('yrq', 'user_id', 'course_id'),
+               names_to = 'week',
+               names_prefix = 'views_week_',
+               values_to = 'views')
+pv$week <- as.numeric(pv$week)
+pv$views[is.na(pv$views)] <- 0
+
+pv <- pv %>%
+  arrange(yrq, user_id, course_id, week) %>%
+  group_by(user_id, course_id, yrq) %>%
+  mutate(csum_pgvw = cumsum(views)) %>%
+  ungroup() %>%
+  group_by(course_id, yrq, week) %>%
+  mutate(crs_avg_pgvw = mean(views, na.rm = T)) %>%
+  ungroup() %>%
+  group_by(user_id, yrq, week) %>%
+  mutate(usr_avg_pgvw = mean(views, na.rm = T)) %>%
+  ungroup()
+
+# to wide:
+widepv <- pv %>%
+  mutate(week = str_pad(week, 2, side = 'left', pad = '0')) %>%
+  pivot_wider(id_cols = c('user_id', 'yrq', 'course_id'),
+              names_from = week,
+              names_prefix = 'wk',
+              names_sep = '_',
+              values_from = c(views, csum_pgvw, crs_avg_pgvw, usr_avg_pgvw))
+
+# # repair names
+# names(pv) <- c('yrq',
+#                'user_id',
+#                'course_id',
+#                'views_wk07',
+#                'views_wk08',
+#                'views_wk09',
+#                'views_wk10',
+#                'views_wk11',
+#                'views_wk12',
+#                'views_wk01',
+#                'views_wk02',
+#                'views_wk03',
+#                'views_wk04',
+#                'views_wk05',
+#                'views_wk06')
+# pv <- pv %>% mutate_all(replace_na, 0)
+
+
+
 
 
 # cleanup url visits file -------------------------------------------------
@@ -139,3 +172,4 @@ w <- paste0('wk', w)
 new.names[4:length(new.names)] <- paste0(new.names[4:length(new.names)], w)
 names(urls) <- new.names
 rm(orig, w, new.names)
+
