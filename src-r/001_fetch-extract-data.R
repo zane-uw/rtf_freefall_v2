@@ -1,7 +1,7 @@
 # Source this for functions to gen raw data
 
-rm(list = ls())
-gc()
+# rm(list = ls())
+# gc()
 
 setwd(rstudioapi::getActiveProject())
 
@@ -18,16 +18,35 @@ con <- dbConnect(odbc(), 'sqlserver01')
 
 # read local data ---------------------------------------------------------
 
-pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv')
-assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv')
-urls <- read_csv('data-raw/weekly_url_count_wide.csv')
 # explore how to merge these later
 
 # globals for filtering ---------------------------------------------------
 
-yrq.min <- min(pv$yrq)
-yrq.max <- max(pv$yrq)
+# read from local files, create a list of the sub-elements we need
 
+read_local_canvas <- function(){
+  res <- list()
+
+  col_def <- cols_only('course_id' = col_double(),
+                       'user_id' = col_double(),
+                       'yrq' = col_double())
+
+  pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv',
+                 col_types = col_def)
+  assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv',
+                    col_types = col_def)
+  urls <- read_csv('data-raw/weekly_url_count_wide.csv',
+                   col_types = col_def)
+
+  res$uid <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  res$cid <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+  res$yrq.min <- min(pv$yrq, na.rm = T)
+  res$yrq.max <- max(pv$yrq, na.rm = T)
+
+  return(res)
+}
+
+canvas_globs <- read_local_canvas()
 
 # mappings between db and lms ---------------------------------------------
 
@@ -35,7 +54,9 @@ link_students <- function(){
   # danger: a person may have more than 1 canvas ID under the same uw_netid and system_key
   # lose about 5k with the last distinct
 
-  skeys <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  # skeys <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  skeys <- canvas_globs$uid
+
   prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv') %>%
     filter(status == 'active', created_by_sis == T)
 
@@ -65,50 +86,13 @@ link_students <- function(){
   return(res)
 }
 
-## actually can just use the enrollments ##
-# connect canvas courses by id by extracting dept and course num
-# keep the top-level section
-  # link_courses <- function(){
-  #
-  #   crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
-  #   # prov_courses <- read_csv('../../../../../canvas-data/courses_all.csv') %>%
-  #   #   filter(created_by_sis == T)
-  #
-  #   cal <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-  #     filter(AcademicYrQtrCode >= yrq.min,
-  #            AcademicYrQtrCode <= yrq.max) %>%
-  #     select(AcademicYrQtrCode,
-  #            AcademicQtrName) %>%
-  #     distinct() %>%
-  #     collect() %>%
-  #     drop_na() %>%
-  #     # create canvas-style term_id
-  #     mutate(term_id = paste(str_sub(AcademicYrQtrCode, end = 4),
-  #                            tolower(AcademicQtrName), sep = '-'),
-  #            yrq = as.numeric(AcademicYrQtrCode)) %>%
-  #     select(yrq, term_id)
-  #
-  #   courses <- read_csv('../../../../../canvas-data/courses_all.csv') %>%
-  #     filter(created_by_sis == T) %>%
-  #     left_join(cal, by = c('term_id' = 'term_id')) %>%
-  #     semi_join(crskeys)
-  #
-  #   xmat <- data.frame(str_split(courses$course_id, "-", simplify = T))
-  #   courses$dept_abbrev <- xmat[,3]
-  #   courses$course_no <- xmat[,4]
-  #   courses$section_short <- xmat[,5]     # this isn't a good match for the time schedule b/c of this truncated section #
-  #   rm(xmat)
-  #
-  #   res <- courses %>%
-  #     select(yrq, canvas_course_id, dept_abbrev, course_no)
-  #
-  #   return(res)
-  # }
-
 # mapping sections and students, these are kind of a mess b/c the db rules for generating keys are inconsistent over time
 # this includes course codes
 link_enrollments <- function(){
-  crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+  # crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+
+  crskeys <- canvas_globs$cid
+
   prov_sect <- read_csv('../../../../../canvas-data/enrollments_all.csv') %>%
     filter(role == 'student')%>%
     select(canvas_course_id, course_id, canvas_user_id, canvas_section_id, section_id) %>%
@@ -135,8 +119,8 @@ link_enrollments <- function(){
                     'course_no' = xmat$X4,
                     'section_1' = ymat$X5,
                     'section2' = xmat$X5) %>%
-    filter(yrq >= yrq.min,
-           yrq <= yrq.max)
+    filter(yrq >= canvas_globs$yrq.min,
+           yrq <= canvas_globs$yrq.max)
 
   return(res)
 }
@@ -151,8 +135,8 @@ canvas_filter <- link_students() %>% copy_to(con, ., overwrite = T)
 # fetch calendar weeks
 get_cal <- function(){
   res <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-    filter(AcademicYrQtrCode >= yrq.min,
-           AcademicYrQtrCode <= yrq.max) %>%
+    filter(AcademicYrQtrCode >= canvas_globs$yrq.min,
+           AcademicYrQtrCode <= canvas_globs$yrq.max) %>%
     select(AcademicYrQtrCode,
            AcademicYrQtrDesc,
            AcademicFiscalYr,
@@ -166,7 +150,7 @@ get_cal <- function(){
 # fetch frozen rep of students from census day (default) or first day (=1). 3 is also a valid option but unlikely
 # to be used for current case
 get_mm_census <- function(indicator = 2){
-  ymin <- yrq.min %/% 10
+  ymin <- canvas_globs$yrq.min %/% 10
   sr_mm <- tbl(con, in_schema('sec', 'sr_mini_master')) %>%
     semi_join(canvas_filter, by = c('mm_system_key' = 'system_key')) %>%
     filter(mm_year >= ymin,
@@ -221,7 +205,7 @@ get_mm_census <- function(indicator = 2){
 
 
 get_stu_1 <- function(){
-  ymin <- yrq.min %/% 10
+  ymin <- canvas_globs$yrq.min %/% 10
   st1 <- tbl(con, in_schema('sec', 'student_1')) %>%
     semi_join(canvas_filter, by = c('system_key' = 'system_key')) %>%
     filter(last_yr_enrolled >= ymin) %>%
