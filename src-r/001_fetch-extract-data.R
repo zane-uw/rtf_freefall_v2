@@ -24,7 +24,6 @@ con <- dbConnect(odbc(), 'sqlserver01')
 
 # read from local files, create a list of the sub-elements we need
 
-<<<<<<< HEAD
 read_local_canvas <- function(){
   res <- list()
 
@@ -48,24 +47,6 @@ read_local_canvas <- function(){
 }
 
 canvas_globs <- read_local_canvas()
-=======
-read_stu_keys <- function(){
-  pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv', col_types = cols_only('user_id' = col_double()))
-  assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv', col_types = cols_only('user_id' = col_double()))
-  urls <- read_csv('data-raw/weekly_url_count_wide.csv', col_types = cols_only('user_id' = col_double()))
-
-  res <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
-  return(res)
-}
-
-read_crs_keys <- function(){
-  pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv', col_types = cols_only('course_id' = col_double()))
-  assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv', col_types = cols_only('course_id' = col_double()))
-  urls <- read_csv('data-raw/weekly_url_count_wide.csv', col_types = cols_only('course_id' = col_double()))
-
-  res <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
-  return(res)
-}
 
 
 # mappings between db and lms ---------------------------------------------
