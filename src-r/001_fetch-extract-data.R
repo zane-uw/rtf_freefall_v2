@@ -1,7 +1,7 @@
 # Source this for functions to gen raw data
 
-rm(list = ls())
-gc()
+# rm(list = ls())
+# gc()
 
 setwd(rstudioapi::getActiveProject())
 
@@ -18,15 +18,30 @@ con <- dbConnect(odbc(), 'sqlserver01')
 
 # read local data ---------------------------------------------------------
 
-pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv')
-assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv')
-urls <- read_csv('data-raw/weekly_url_count_wide.csv')
 # explore how to merge these later
 
 # globals for filtering ---------------------------------------------------
 
 yrq.min <- min(pv$yrq)
 yrq.max <- max(pv$yrq)
+
+read_stu_keys <- function(){
+  pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv', col_types = cols_only('user_id' = col_double()))
+  assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv', col_types = cols_only('user_id' = col_double()))
+  urls <- read_csv('data-raw/weekly_url_count_wide.csv', col_types = cols_only('user_id' = col_double()))
+
+  res <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  return(res)
+}
+
+read_crs_keys <- function(){
+  pv <- read_csv('data-raw/weekly_page_views_wide_2020-05-07.csv', col_types = cols_only('course_id' = col_double()))
+  assgn <- read_csv('data-raw/weekly_assignments_wide_2020-06-12.csv', col_types = cols_only('course_id' = col_double()))
+  urls <- read_csv('data-raw/weekly_url_count_wide.csv', col_types = cols_only('course_id' = col_double()))
+
+  res <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+  return(res)
+}
 
 
 # mappings between db and lms ---------------------------------------------
@@ -35,7 +50,9 @@ link_students <- function(){
   # danger: a person may have more than 1 canvas ID under the same uw_netid and system_key
   # lose about 5k with the last distinct
 
-  skeys <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  # skeys <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
+  skeys <- read_canvas_user_id()
+
   prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv') %>%
     filter(status == 'active', created_by_sis == T)
 
@@ -108,7 +125,10 @@ link_students <- function(){
 # mapping sections and students, these are kind of a mess b/c the db rules for generating keys are inconsistent over time
 # this includes course codes
 link_enrollments <- function(){
-  crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+  # crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
+
+  crskeys <- read_canvas_course_ids()
+
   prov_sect <- read_csv('../../../../../canvas-data/enrollments_all.csv') %>%
     filter(role == 'student')%>%
     select(canvas_course_id, course_id, canvas_user_id, canvas_section_id, section_id) %>%
