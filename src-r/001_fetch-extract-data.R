@@ -16,10 +16,6 @@ library(dbplyr)
 # kinit
 con <- dbConnect(odbc(), 'sqlserver01')
 
-# read local data ---------------------------------------------------------
-
-# explore how to merge these later
-
 # globals for filtering ---------------------------------------------------
 
 # read from local files, create a list of the sub-elements we need
