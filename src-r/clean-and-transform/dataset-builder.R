@@ -4,7 +4,9 @@
 rm(list = ls())
 gc()
 
-source('src-r/clean-and-transform/input-canvas-output-merged-intermediate.R')
+library(tidyverse)
+
+source('src-r/clean-and-transform/input-canvas-output-merged-intermediate.R') # add lms_wkly_data to env
 source('src-r/001_fetch-extract-data.R')
 
 # convenience function to write out txt's of character and numeric variables for python handling
@@ -52,4 +54,32 @@ transcript_grades <- get_tran_courses() %>%
   mutate_if(is_logical, as.numeric) %>%
   mutate_if(is.character, trimws)
 
-transcript_qtrly <- get_transcript() %>% collect() %>% mutate_if(is.character, trimsws)
+# transcript_qtrly <- get_transcript() %>% collect() %>% mutate_if(is.character, trimws)
+
+
+# create scratch data for python test -------------------------------------
+
+adv.grades <- c('I', 'W', '*W', 'W3', 'W4', 'W5', 'W6', 'W7', 'HW', 'NC', 'NS', 'LP')
+yvar <- transcript_grades %>%
+  mutate(adv = if_else(numeric.grade <= 2.5 | grade %in% adv.grades | incomplete == 1, 1, 0),
+         course = paste(dept_abbrev, course_number, sep = '_')) %>%
+  select(Y = adv,
+         system_key,
+         course,
+         yrq,
+         course_credits,
+         course_branch,
+         honor_course,
+         repeat_course,
+         writing)
+scr <- lms_wkly_data %>%
+  select(yrq, user_id, course_id, ends_with(c('wk01', 'wk02', 'wk03'))) %>%
+  mutate_all(replace_na, 0) %>%
+  inner_join( select(db.linker, canvas_course_id, canvas_user_id, system_key, yrq, course),
+             by = c('user_id' = 'canvas_user_id',
+                    'course_id' = 'canvas_course_id',
+                    'yrq' = 'yrq')) %>%
+  inner_join(yvar)
+
+# write_vartypes(scr)
+write_csv(scr, 'data-prepped/scratch-py-data.csv')

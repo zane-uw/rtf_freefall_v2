@@ -3,7 +3,7 @@
 # rm(list = ls())
 # gc()
 
-setwd(rstudioapi::getActiveProject())
+#setwd(rstudioapi::getActiveProject())
 
 library(tidyverse)
 library(odbc)
@@ -51,11 +51,10 @@ link_students <- function(){
   # danger: a person may have more than 1 canvas ID under the same uw_netid and system_key
   # lose about 5k with the last distinct
 
-  # skeys <- data.frame('canvas_user_id' = union(union(pv$user_id, assgn$user_id), urls$user_id))
   skeys <- canvas_globs$uid
 
-  prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv') %>%
-    filter(status == 'active', created_by_sis == T)
+  prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv')
+  prov_users <- prov_users[prov_users$status == 'active' & prov_users$created_by_sis == T,]
 
   skeys <- skeys %>% inner_join(prov_users, by = c('canvas_user_id' = 'canvas_user_id')) %>%
     mutate(sortable_name = str_remove_all(sortable_name, " "))
@@ -88,16 +87,22 @@ link_students <- function(){
 link_enrollments <- function(){
   # crskeys <- data.frame('canvas_course_id' = union(union(pv$course_id, assgn$course_id), urls$course_id))
 
-  crskeys <- read_canvas_course_ids()
+  # crskeys <- read_canvas_course_ids()
+  crskeys <- canvas_globs$cid
 
-  prov_sect <- read_csv('../../../../../canvas-data/enrollments_all.csv') %>%
-    filter(role == 'student')%>%
-    select(canvas_course_id, course_id, canvas_user_id, canvas_section_id, section_id) %>%
+  prov_sect <- read_csv('../../../../../canvas-data/enrollments_all.csv',
+                        col_types = cols_only(canvas_course_id = col_guess(),
+                                              course_id = col_guess(),
+                                              canvas_user_id = col_guess(),
+                                              canvas_section_id = col_guess(),
+                                              section_id = col_guess())) %>%
+    # select(canvas_course_id, course_id, canvas_user_id, canvas_section_id, section_id) %>%
     drop_na() %>%
     semi_join(crskeys)
+  # prov_sect <- prov_sect[prov_sect$role == 'student',]
 
   # also filter out courses that start with 'course_' - these aren't useful
-  prov_sect <- prov_sect[grepl("^course_", prov_sect$course_id) == F,]
+  prov_sect <- prov_sect[grepl("^course", prov_sect$section_id) == F,]
 
   # split out elements from section, replace older versions that use different chars
   strep <- function(x) (str_replace_all(x, "(\\,|\\.|\\/)", "-"))
