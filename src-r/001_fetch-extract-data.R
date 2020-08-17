@@ -424,3 +424,156 @@ get_stu_prog_enr <- function(){
 
   return(res)
 }
+
+
+
+# Utility functions for raw s3 txt files ----------------------------------
+
+con <- dbConnect(odbc(), 'sqlserver01')
+cal <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
+  filter(AcademicContigYrQtrCode >= 20181,
+         AcademicQtr != '3',
+         AcademicYrQtrCode <= 20201) %>%
+  mutate(yrq = as.numeric(AcademicYrQtrCode)) %>%
+  select(CalendarDateKeyId,
+         week = AcademicQtrWeekNum,
+         yrq) %>%
+  collect()
+#
+# make_wide_weekly_assignments <- function(files){
+#
+#   wkly <- data.frame()
+#   for(i in 1:length(files)){
+#     dat <- read_delim(files[i],
+#                       delim = '|',
+#                       col_names = c('yrq', 'course_id', 'user_id', 'assignment_id', 'due_at', 'pts_possible', 'status', 'score'),
+#                       na = c('None', 'NA'))
+#     dat <- dat[!is.na(dat$status),]
+#     # create dummies for status
+#     dat <- bind_cols(dat, data.frame(model.matrix(~ 0 + status, data = dat))) %>% select(-status)
+#
+#     # Use the due date to stand-in for week
+#     dat$CalendarDateKeyId <- str_remove_all(str_sub(dat$due_at, end = 10), '-')
+#     dat$CalendarDateKeyId <- as.numeric(dat$CalendarDateKeyId)
+#
+#     # merge with calendar -- some data loss
+#     mg <- dat %>%
+#       inner_join(cal) %>%
+#       select(-due_at,
+#              -CalendarDateKeyId)
+#
+#     agg.n.assgn <- mg %>%
+#       group_by(yrq, user_id, course_id, week) %>%
+#       summarize(n_assgn = n_distinct(assignment_id)) %>%
+#       ungroup()
+#     agg.wk <- mg %>%
+#       group_by(yrq, user_id, course_id, week) %>%
+#       select(-assignment_id) %>%
+#       summarize_all(sum) %>%
+#       inner_join(agg.n.assgn) %>%
+#       mutate(score = replace_na(0))
+#
+#     d <- dat %>% distinct(yrq, course_id, user_id)
+#     week <- sort(unique(mg$week))
+#     exp.d <- expand(d, nesting(yrq, course_id, user_id), week)
+#
+#     # now combine:
+#     exp.wk <- exp.d %>%
+#       left_join(agg.wk) %>%
+#       mutate_at(c('pts_possible', 'score', 'statusfloating', 'statuslate', 'statusmissing', 'statuson_time', 'n_assgn'),
+#                 replace_na, 0) %>%
+#       ungroup()
+#
+#     assgn.wide <- exp.wk %>%
+#       pivot_wider(id_cols = c('yrq', 'user_id', 'course_id'),
+#                   names_from = 'week',
+#                   names_prefix = 'week_',
+#                   values_from = c('pts_possible',
+#                                   'score',
+#                                   'statusfloating',
+#                                   'statuslate',
+#                                   'statusmissing',
+#                                   'statuson_time',
+#                                   'n_assgn'))
+#
+#     wkly <- bind_rows(wkly, assgn.wide)
+#   }
+#
+#   return(wkly)
+# }
+#
+
+make_long_weekly_assignments <- function(files){
+
+  wkly <- data.frame()
+  for(i in 1:length(files)){
+    dat <- read_delim(files[i],
+                      delim = '|',
+                      col_names = c('yrq', 'course_id', 'user_id', 'assignment_id', 'due_at', 'pts_possible', 'status', 'score'),
+                      na = c('None', 'NA'))
+    dat <- dat[!is.na(dat$status),]
+    dat <- dat[!is.na(dat$due_at),]
+    # create dummies for status
+    dat <- bind_cols(dat, data.frame(model.matrix(~ 0 + status, data = dat))) %>% select(-status)
+
+    # Use the due date to stand-in for week
+    # Many due-dates are missing, e.g. if an assignment is floating it has no date
+    dat$CalendarDateKeyId <- str_remove_all(str_sub(dat$due_at, end = 10), '-')
+    dat$CalendarDateKeyId <- as.numeric(dat$CalendarDateKeyId)
+
+    # merge with calendar -- some data loss
+    mg <- dat %>%
+      inner_join(cal) %>%
+      select(-due_at,
+             -CalendarDateKeyId)
+
+    agg.n.assgn <- mg %>%
+      group_by(yrq, user_id, course_id, week) %>%
+      summarize(n_assgn = n_distinct(assignment_id)) %>%
+      ungroup()
+    agg.wk <- mg %>%
+      group_by(yrq, user_id, course_id, week) %>%
+      select(-assignment_id) %>%
+      summarize_all(sum) %>%
+      inner_join(agg.n.assgn)
+
+    d <- dat %>% distinct(yrq, course_id, user_id)
+    week <- sort(unique(mg$week))
+    exp.d <- expand(d, nesting(yrq, course_id, user_id), week)
+
+    # now combine:
+    exp.wk <- exp.d %>%
+      left_join(agg.wk) %>%
+      replace_na(list(pts_possible = 0,
+                      score = 0,
+                      statusfloating = 0,
+                      statuslate = 0,
+                      statusmissing = 0,
+                      statuson_time = 0,
+                      n_assgn = 0)) %>%
+      mutate(score = if_else(score < 0, 0, score)) %>%
+      ungroup()
+
+    wkly <- bind_rows(wkly, exp.wk)
+  }
+
+  return(wkly)
+}
+
+long_weekly_assgn <- make_long_weekly_assignments(fnames)
+
+wide_weekly_assgn <- long_weekly_assgn %>%
+  pivot_wider(id_cols = c('yrq', 'user_id', 'course_id'),
+              names_from = 'week',
+              names_prefix = 'week_',
+              values_from = c('pts_possible',
+                              'score',
+                              'statusfloating',
+                              'statuslate',
+                              'statusmissing',
+                              'statuson_time',
+                              'n_assgn'))
+
+write_csv(long_weekly_assgn, paste0('data-intermediate/weekly_assignments_long_', Sys.Date(), '.csv'))
+write_csv(wide_weekly_assgn, paste0('data-intermediate/weekly_assignments_wide_', Sys.Date(), '.csv'))
+
