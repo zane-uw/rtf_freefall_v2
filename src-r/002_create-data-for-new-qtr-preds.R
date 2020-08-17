@@ -24,3 +24,4 @@ fetch_new_data <- function(bucket_path){
 # import SDB data ---------------------------------------------------------
 source('src-r/001_fetch-extract-data.R')
 
+
