@@ -72,6 +72,7 @@ yvar <- transcript_grades %>%
          honor_course,
          repeat_course,
          writing)
+
 scr <- lms_wkly_data %>%
   select(yrq, user_id, course_id, ends_with(c('wk01', 'wk02', 'wk03'))) %>%
   mutate_all(replace_na, 0) %>%
@@ -82,4 +83,4 @@ scr <- lms_wkly_data %>%
   inner_join(yvar)
 
 # write_vartypes(scr)
-write_csv(scr, 'data-prepped/scratch-py-data.csv')
+# write_csv(scr, 'data-prepped/scratch-py-data.csv')
