@@ -430,72 +430,16 @@ get_stu_prog_enr <- function(){
 # Utility functions for raw s3 txt files ----------------------------------
 
 
-#
-# # make_wide_weekly_assignments <- function(files){
-#
-#
-#
-#   wkly <- data.frame()
-#   for(i in 1:length(files)){
-#     dat <- read_delim(files[i],
-#                       delim = '|',
-#                       col_names = c('yrq', 'course_id', 'user_id', 'assignment_id', 'due_at', 'pts_possible', 'status', 'score'),
-#                       na = c('None', 'NA'))
-#     dat <- dat[!is.na(dat$status),]
-#     # create dummies for status
-#     dat <- bind_cols(dat, data.frame(model.matrix(~ 0 + status, data = dat))) %>% select(-status)
-#
-#     # Use the due date to stand-in for week
-#     dat$CalendarDateKeyId <- str_remove_all(str_sub(dat$due_at, end = 10), '-')
-#     dat$CalendarDateKeyId <- as.numeric(dat$CalendarDateKeyId)
-#
-#     # merge with calendar -- some data loss
-#     mg <- dat %>%
-#       inner_join(cal) %>%
-#       select(-due_at,
-#              -CalendarDateKeyId)
-#
-#     agg.n.assgn <- mg %>%
-#       group_by(yrq, user_id, course_id, week) %>%
-#       summarize(n_assgn = n_distinct(assignment_id)) %>%
-#       ungroup()
-#     agg.wk <- mg %>%
-#       group_by(yrq, user_id, course_id, week) %>%
-#       select(-assignment_id) %>%
-#       summarize_all(sum) %>%
-#       inner_join(agg.n.assgn) %>%
-#       mutate(score = replace_na(0))
-#
-#     d <- dat %>% distinct(yrq, course_id, user_id)
-#     week <- sort(unique(mg$week))
-#     exp.d <- expand(d, nesting(yrq, course_id, user_id), week)
-#
-#     # now combine:
-#     exp.wk <- exp.d %>%
-#       left_join(agg.wk) %>%
-#       mutate_at(c('pts_possible', 'score', 'statusfloating', 'statuslate', 'statusmissing', 'statuson_time', 'n_assgn'),
-#                 replace_na, 0) %>%
-#       ungroup()
-#
-#     assgn.wide <- exp.wk %>%
-#       pivot_wider(id_cols = c('yrq', 'user_id', 'course_id'),
-#                   names_from = 'week',
-#                   names_prefix = 'week_',
-#                   values_from = c('pts_possible',
-#                                   'score',
-#                                   'statusfloating',
-#                                   'statuslate',
-#                                   'statusmissing',
-#                                   'statuson_time',
-#                                   'n_assgn'))
-#
-#     wkly <- bind_rows(wkly, assgn.wide)
-#   }
-#
-#   return(wkly)
-# }
+# expand weeks w/in data frame of canvas activity
+# ie fill missing week + values
+expand_weeks <- function(df, week_seq){
+  d <- df %>% distinct(yrq, course_id, user_id)
+  week <- sort(unique(week_seq))
+  return( expand(d, nesting(yrq, course_id, user_id), week) )
+}
 
-make_long_weekly_assignments <- function(f = 'data-raw/new-preds/assignments.txt',
+
+agg_weekly_assignments <- function(f = 'data-raw/new-preds/assignments.txt',
                                          hd = 'data-raw/assignments-head.txt'){
 
   con <- dbConnect(odbc(), 'sqlserver01')
@@ -539,12 +483,8 @@ make_long_weekly_assignments <- function(f = 'data-raw/new-preds/assignments.txt
     summarize_all(sum) %>%
     inner_join(agg.n.assgn)
 
-  d <- dat %>% distinct(yrq, course_id, user_id)
-  week <- sort(unique(mg$week))
-  exp.d <- expand(d, nesting(yrq, course_id, user_id), week)
-
   # now combine:
-  exp.wk <- exp.d %>%
+  res <- expand_weeks(dat, sort(unique(cal$week))) %>%
     left_join(agg.wk) %>%
     replace_na(list(pts_possible = 0,
                     score = 0,
@@ -557,10 +497,11 @@ make_long_weekly_assignments <- function(f = 'data-raw/new-preds/assignments.txt
     ungroup()
 
   dbDisconnect(con)
-  return(exp.wk)
+  return(res)
 }
 
-make_long_weekly_urls <- function(f = 'data-raw/new-preds/partic-url.txt',
+
+agg_weekly_urls <- function(f = 'data-raw/new-preds/partic-url.txt',
                                   hd = 'data-raw/partic-url-head.txt'){
 
   con <- dbConnect(odbc(), 'sqlserver01')
@@ -579,20 +520,16 @@ make_long_weekly_urls <- function(f = 'data-raw/new-preds/partic-url.txt',
   dat <- drop_na(dat, date)
   dat$CalendarDateKeyId <- as.numeric(as.numeric(str_remove_all(str_sub(dat$date, end = 10), '-')))
 
-  dat <- dat %>%
+  res <- dat %>%
     inner_join(cal) %>%
     select(-date, -CalendarDateKeyId) %>%
     group_by(yrq, course_id, user_id, week) %>%
     summarize(nd_urls = n_distinct(url),
               n_urls = n()) %>%
-    ungroup()
-
-  # for full week expansion
-  d <- dat %>% distinct(yrq, course_id, user_id)
-  week <- sort(unique(cal$week))
-  exp.d <- expand(d, nesting(yrq, course_id, user_id), week)
-
-  dat <- dat %>% right_join(exp.d) %>% mutate_at(c('nd_urls', 'n_urls'), replace_na, 0)
+    ungroup() %>%
+    right_join( expand_weeks(dat, sort(unique(cal$week))) ) %>%
+    replace_na(list(nd_urls = 0, n_urls = 0))
+    # mutate_at(c('nd_urls', 'n_urls'), replace_na, 0)
 
   # text_mat <- str_split(dat$url, '\\/')
   # dat$partic_item <- sapply(text_mat, function(x) {ifelse(x[6] == 'courses', x[8], x[6])}, simplify = T)
@@ -620,5 +557,39 @@ make_long_weekly_urls <- function(f = 'data-raw/new-preds/partic-url.txt',
   #             values_from = n)
 
   dbDisconnect(con)
-  return(dat)
+  return(res)
+}
+
+
+agg_weekly_pageviews <- function(f = 'data-raw/new-preds/page-views.txt',
+                                 hd = 'data-raw/partic-page-views-head.txt'){
+  con <- dbConnect(odbc(), 'sqlserver01')
+  cal <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
+    filter(AcademicContigYrQtrCode >= 20181) %>%
+    mutate(yrq = as.numeric(AcademicYrQtrCode)) %>%
+    select(CalendarDateKeyId,
+           week = AcademicQtrWeekNum,
+           yrq) %>%
+    collect()
+
+  dat <- read_delim(f,
+                    col_names = scan(hd, 'character', sep = '|'),
+                    delim = '|',
+                    na = c('None', 'NA')) %>%
+    drop_na(user_id)
+
+  dat$CalendarDateKeyId <- str_remove_all(str_sub(dat$date, end = 10), '-')
+  dat$CalendarDateKeyId <- as.numeric(dat$CalendarDateKeyId)
+
+  res <- dat %>%
+    inner_join(cal) %>%
+    group_by(user_id, course_id, yrq, week) %>%
+    summarize(page_views = sum(page_views, na.rm = T)) %>%
+    ungroup() %>%
+    # week expansion
+    right_join( expand_weeks(dat, sort(unique(cal$week))) ) %>%
+    replace_na(list(page_views = 0))
+
+  dbDisconnect(con)
+  return(res)
 }
