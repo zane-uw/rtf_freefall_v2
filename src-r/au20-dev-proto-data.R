@@ -18,11 +18,12 @@ fetch_cal_wks <- function(){
            CalendarDate,
            AcademicQtrDayNum) %>%
     distinct() %>%
-    collect()
+    collect() # %>%
+    # mutate(CalendarDate = strftime(CalendarDate, format = "%Y-%m-%d", tz = "UTC", usetz = F))
   return(res)
 }
 
-cal_wks <- fetch_cal_wks()
+cal_wks <- fetch_cal_wks ()
 
 # build data from raw -----------------------------------------------------
 data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
@@ -58,7 +59,8 @@ mrg_fun <- function(dir, wk, cal_wks = cal_wks){
   A <- lapply(alist, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
   A <- bind_rows(A)
   A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk) %>%
+    mutate(week = wk,
+           due_date = lubridate::round_date(due_at, unit = "day")) %>%
     replace_na(list(pts_possible = 0, score = 0))
   # A$week <- wk
 
@@ -67,39 +69,44 @@ mrg_fun <- function(dir, wk, cal_wks = cal_wks){
   #  student's total points in the course so far;
   #  course actual points in a week
 
-    # crs_pts <- A %>%
-    #   replace_na(list(pts_possible = 0)) %>%
-    #   # inner_join(cal_wks, by = c('due_at' = 'CalendarDate', 'week' = 'AcademicQtrWeekNum')) %>%
-    #   distinct(canvas_course_id, assgn_id, pts_possible, week) %>%
-    #   group_by(canvas_course_id, week) %>%
-    #   summarize(pts_possible = sum(pts_possible, na.rm = T))
-    #
-    # stu_pts <- A %>%
-    #   replace_na(list(score = 0)) %>%
-    #   group_by(canvas_user_id, canvas_course_id, week) %>%
-    #   summarize(score = sum(score))
-
-  pts <- A %>%
-    # replace_na(list(pts_possible = 0, score = 0)) %>%
-    group_by(canvas_user_id, canvas_course_id, week) %>%
-    summarize(tot_pts_poss = sum(pts_possible),
-              score = sum(score)) %>%
-    ungroup()
-
+          # crs_pts <- A %>%
+          #   replace_na(list(pts_possible = 0)) %>%
+          #   # inner_join(cal_wks, by = c('due_at' = 'CalendarDate', 'week' = 'AcademicQtrWeekNum')) %>%
+          #   distinct(canvas_course_id, assgn_id, pts_possible, week) %>%
+          #   group_by(canvas_course_id, week) %>%
+          #   summarize(pts_possible = sum(pts_possible, na.rm = T))
+          #
+          # stu_pts <- A %>%
+          #   replace_na(list(score = 0)) %>%
+          #   group_by(canvas_user_id, canvas_course_id, week) %>%
+          #   summarize(score = sum(score))
+# √ #
+  # pts <- A %>%
+  #   # replace_na(list(pts_possible = 0, score = 0)) %>%
+  #   group_by(canvas_user_id, canvas_course_id, week) %>%
+  #   summarize(tot_pts_poss = sum(pts_possible),
+  #             score = sum(score)) %>%
+  #   ungroup()
+####
   wkpts <- A %>%
+    select(canvas_course_id, assgn_id, due_date, pts_possible) %>%
+    distinct() %>%
+    left_join(cal_wks, by = c('due_date' = 'CalendarDate'))
 
 
-return(pts)
 
+return(wkpts)
 
+# √ #
     # P <- lapply(plist, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
     # P <- bind_rows(P)
     # P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T)
     # P$week <- wk
+####
 
 }
 
-y <- mrg_fun(dirlist[1], wks[1], cal_wks)
+x <- mrg_fun(dirlist[1], wks[1], cal_wks)
 
 merge.partic <- function(){
   (files <- list.files(in.folder, pattern = 'partic-batch', full.names = T))
