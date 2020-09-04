@@ -120,3 +120,75 @@ merge.partic <- function(){
   X <- X %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T)
   return(X)
 }
+
+
+
+# fetch quarterly results from SDB ----------------------------------------
+
+# return a named list of transcripts and transcript-courses-taken
+fetch_trans <- function(){
+  con <- dbConnect(odbc(), 'sqlserver01')
+  # empty list for results
+  res <- list()
+
+    # mjr <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
+    #   filter(tran_yr >= 2020,
+    #          index1 == 1) %>%
+    #   select(-index1,
+    #          -tran_evening)
+    #
+    #
+    # tran <- tbl(con, in_schema('sec', 'transcript')) %>%
+    #   mutate(yrq = tran_yr * 10 + tran_qtr) %>%
+    #   filter(yrq >= 20202) %>%
+    #   inner_join(mjr) %>%
+    #   select(system_key,
+    #          yrq,
+    #          resident,
+    #          class,
+    #          special_program,
+    #          honors_program,
+    #          tenth_day_credits,
+    #          num_courses,
+    #          add_to_cum,
+    #          qtr_grade_points,
+    #          qtr_graded_attmp,
+    #          qtr_nongrd_earned,
+    #          qtr_deductible,
+    #          tran_branch,
+    #          tran_college,
+    #          tran_pathway,
+    #          tran_deg_level,
+    #          tran_deg_type,
+    #          tran_major_abbr) %>%
+    #   collect()
+
+
+  tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
+    mutate(yrq = tran_yr * 10 + tran_qtr) %>%
+    filter(yrq >= 20202) %>%
+    select(system_key,
+           yrq,
+           index1,
+           dept_abbrev,
+           course_number,
+           section_id,
+           course_credits,
+           course_branch,
+           grade_system,    # 0 = standard; 5 = C/NC; 4 = S/NS; 9 = audit
+           grade,
+           honor_course,
+           incomplete,
+           repeat_course,
+           writing,
+           major_disallowed) %>%
+    distinct() %>%
+    collect()
+
+  res$tran <- tran
+  res$tran_crs <- tran_crs
+
+  return(res)
+}
+
+y <- fetch_trans()
