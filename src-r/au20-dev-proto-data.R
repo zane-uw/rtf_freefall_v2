@@ -4,6 +4,8 @@ library(tidyverse)
 library(odbc)
 library(dbplyr)
 
+setwd(rstudioapi::getActiveProject())
+
 
 # fetch calendar weeks ----------------------------------------------------
 # DSN setup
@@ -12,23 +14,21 @@ library(dbplyr)
 fetch_cal_wks <- function(){
   con <- dbConnect(odbc(), 'sqlserver01')
   res <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-    filter(AcademicFiscalYr > 2010) %>%
+    filter(AcademicYrQtrCode == 20202) %>%
     select(AcademicYrQtrCode,
            AcademicQtrWeekNum,
            CalendarDate,
            AcademicQtrDayNum) %>%
     distinct() %>%
-    collect() # %>%
-    # mutate(CalendarDate = strftime(CalendarDate, format = "%Y-%m-%d", tz = "UTC", usetz = F))
+    collect() %>%
+    drop_na(AcademicYrQtrCode)
   return(res)
 }
 
-cal_wks <- fetch_cal_wks ()
+cal_wks <- fetch_cal_wks()
 
 # build data from raw -----------------------------------------------------
 data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
-ahead <- c('')
-phead <-
 
 (dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
 # spring20 is empty for week03 b/c data collection started in week02
@@ -44,83 +44,74 @@ wks <- seq_along(dirlist)
 #   for each directory:
        # combine the grades and assignments; adding the week #
 
-# TODO: finish up merging fun for canvas files (needs to iterate over weeks, etc.)
-mrg_fun <- function(dir, wk, cal_wks = cal_wks){
+# TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
+
+mrg_assgn <- function(dir, wk, cal_wks = cal_wks){
   anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
   atypes <- c('nnnTncn')
+  navals = c('NA', 'None', 'none', 'NULL')
+  afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
+
+  A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
+  A <- bind_rows(A)
+  A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
+    mutate(week = wk,
+           due_date = lubridate::round_date(due_at, unit = "day")) %>%
+    replace_na(list(pts_possible = 0, score = 0)) %>%
+    drop_na(due_at) %>%
+    inner_join(cal_wks, by = c('due_date' = 'CalendarDate')) %>%
+    filter(AcademicQtrWeekNum == week)
+
+  stu_score <- A %>%
+    group_by(canvas_course_id, canvas_user_id) %>%
+    summarize(score = sum(score, na.rm = T)) %>%
+    ungroup()
+
+  # points possible in a course this week
+  crs_pts <- A %>%
+    distinct(canvas_course_id, assgn_id, week, pts_possible) %>%
+    group_by(canvas_course_id, week) %>%
+    summarize(pts_possible = sum(pts_possible, na.rm = T),
+              n_assgn = n_distinct(assgn_id))
+
+  res <- stu_score %>% left_join(crs_pts)
+
+  return(res)
+}
+
+#
+# x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
+# y <- mrg_assgn(dirlist[2], wks[2], cal_wks)
+# z <- mrg_assgn(dirlist[3], wks[3], cal_wks)
+# q <- bind_rows(x, y, z) %>% arrange(canvas_course_id, canvas_user_id, week)
+
+mrg_partic <- function(dir, wk) {
   pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
               'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
               'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
   ptypes <- c('nnnnnnnnnnn')
   navals = c('NA', 'None', 'none', 'NULL')
+  pfiles <- list.files(dir, pattern = '^partic-', full.names = T)
 
-  alist <- list.files(dir, pattern = '^assgn-', full.names = T)
-  plist <- list.files(dir, pattern = '^partic-', full.names = T)
+  P <- lapply(pfiles, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
+  P <- bind_rows(P)
+  P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T) %>%
+    drop_na(canvas_user_id) %>%
+    mutate(week = wk)
 
-  A <- lapply(alist, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
-  A <- bind_rows(A)
-  A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk,
-           due_date = lubridate::round_date(due_at, unit = "day")) %>%
-    replace_na(list(pts_possible = 0, score = 0))
-  # A$week <- wk
-
-  # 3 calcs here for course points/scores:
-  #  course's total points possible
-  #  student's total points in the course so far;
-  #  course actual points in a week
-
-          # crs_pts <- A %>%
-          #   replace_na(list(pts_possible = 0)) %>%
-          #   # inner_join(cal_wks, by = c('due_at' = 'CalendarDate', 'week' = 'AcademicQtrWeekNum')) %>%
-          #   distinct(canvas_course_id, assgn_id, pts_possible, week) %>%
-          #   group_by(canvas_course_id, week) %>%
-          #   summarize(pts_possible = sum(pts_possible, na.rm = T))
-          #
-          # stu_pts <- A %>%
-          #   replace_na(list(score = 0)) %>%
-          #   group_by(canvas_user_id, canvas_course_id, week) %>%
-          #   summarize(score = sum(score))
-# √ #
-  # pts <- A %>%
-  #   # replace_na(list(pts_possible = 0, score = 0)) %>%
-  #   group_by(canvas_user_id, canvas_course_id, week) %>%
-  #   summarize(tot_pts_poss = sum(pts_possible),
-  #             score = sum(score)) %>%
-  #   ungroup()
-####
-  wkpts <- A %>%
-    select(canvas_course_id, assgn_id, due_date, pts_possible) %>%
-    distinct() %>%
-    left_join(cal_wks, by = c('due_date' = 'CalendarDate'))
-
-
-
-return(wkpts)
-
-# √ #
-    # P <- lapply(plist, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
-    # P <- bind_rows(P)
-    # P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T)
-    # P$week <- wk
-####
-
+  return(P)
 }
 
-x <- mrg_fun(dirlist[1], wks[1], cal_wks)
+x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
+y <- mrg_partic(dirlist[1], wks[1])
+z <- left_join(y, x)  # fill na here
 
-merge.partic <- function(){
-  (files <- list.files(in.folder, pattern = 'partic-batch', full.names = T))
-  cnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
-              'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
-              'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
-  ctypes <- c('nnnnnnnnnnn')
+# TODO: Loops for all partic, assignments
 
-  X <- lapply(files, read_delim, delim = '|', col_types = ctypes, col_names = cnames, na = c('NA', 'None', 'none', 'NULL'))
-  X <- bind_rows(X)
-  X <- X %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T)
-  return(X)
-}
+
+
+
+
 
 
 
