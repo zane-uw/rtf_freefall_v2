@@ -6,6 +6,11 @@ library(dbplyr)
 
 setwd(rstudioapi::getActiveProject())
 
+data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
+(dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
+# spring20 is empty for week03 b/c data collection started in week02
+dirlist <- dirlist[-grep('03', dirlist)]
+wks <- seq_along(dirlist)
 
 # fetch calendar weeks ----------------------------------------------------
 # DSN setup
@@ -28,16 +33,6 @@ fetch_cal_wks <- function(){
 cal_wks <- fetch_cal_wks()
 
 # build data from raw -----------------------------------------------------
-data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
-
-(dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
-# spring20 is empty for week03 b/c data collection started in week02
-dirlist <- dirlist[-grep('03', dirlist)]
-wks <- seq_along(dirlist)
-# lapply(seq_along(x), function(y, n, i) { paste(n[[i]], y[[i]]) }, y=x, n=names(x))
-# (partlist <- list.files(dirlist, pattern = 'partic-'))
-# (assglist <- lapply(dirlist, list.files, pattern = 'assgn-', full.names = T))
-# lapply(assglist, function(x) lapply(x, function(y) read_delim(y, delim = '|')))
 
 # tasks:
 # list directories:
@@ -46,7 +41,7 @@ wks <- seq_along(dirlist)
 
 # TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
 
-mrg_assgn <- function(dir, wk, cal_wks = cal_wks){
+mrg_assgn <- function(dir, wk){
   anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
   atypes <- c('nnnTncn')
   navals = c('NA', 'None', 'none', 'NULL')
@@ -55,35 +50,11 @@ mrg_assgn <- function(dir, wk, cal_wks = cal_wks){
   A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
   A <- bind_rows(A)
   A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk,
-           due_date = lubridate::round_date(due_at, unit = "day")) %>%
-    replace_na(list(pts_possible = 0, score = 0)) %>%
-    drop_na(due_at) %>%
-    inner_join(cal_wks, by = c('due_date' = 'CalendarDate')) %>%
-    filter(AcademicQtrWeekNum == week)
+    mutate(week = wk) %>%
+    replace_na(list(pts_possible = 0, score = 0))
 
-  stu_score <- A %>%
-    group_by(canvas_course_id, canvas_user_id) %>%
-    summarize(score = sum(score, na.rm = T)) %>%
-    ungroup()
-
-  # points possible in a course this week
-  crs_pts <- A %>%
-    distinct(canvas_course_id, assgn_id, week, pts_possible) %>%
-    group_by(canvas_course_id, week) %>%
-    summarize(pts_possible = sum(pts_possible, na.rm = T),
-              n_assgn = n_distinct(assgn_id))
-
-  res <- stu_score %>% left_join(crs_pts)
-
-  return(res)
+  return(A)
 }
-
-#
-# x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
-# y <- mrg_assgn(dirlist[2], wks[2], cal_wks)
-# z <- mrg_assgn(dirlist[3], wks[3], cal_wks)
-# q <- bind_rows(x, y, z) %>% arrange(canvas_course_id, canvas_user_id, week)
 
 mrg_partic <- function(dir, wk) {
   pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
@@ -102,9 +73,35 @@ mrg_partic <- function(dir, wk) {
   return(P)
 }
 
-x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
-y <- mrg_partic(dirlist[1], wks[1])
-z <- left_join(y, x)  # fill na here
+# Use the calendar to calculate week + course vars
+# Pts possible this week; number of assignments with a due date in this week
+mrg_crs_vars <- function(dir, wk, cal_wks = cal_wks){
+  anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
+  atypes <- c('nnnTncn')
+  navals = c('NA', 'None', 'none', 'NULL')
+  afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
+
+  A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
+  A <- bind_rows(A)
+  A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
+    mutate(week = wk,
+           due_date = lubridate::floor_date(due_at, unit = "day")) %>%
+    replace_na(list(pts_possible = 0, score = 0)) %>%
+    inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
+                               'week' = 'AcademicQtrWeekNum')) # %>%
+    # filter(AcademicQtrWeekNum == week)
+
+  res <- A %>%
+    select(week, canvas_course_id, assgn_id, pts_possible) %>%
+    distinct() %>%
+    group_by(canvas_course_id, week) %>%
+    summarize(n_assign = n_distinct(assgn_id),
+              wk_pts_poss = sum(pts_possible)) %>%
+    ungroup()
+
+  return(res)
+}
+
 
 # TODO: Loops for all partic, assignments
 
@@ -183,3 +180,13 @@ fetch_trans <- function(){
 
 tran_list <- fetch_trans()
 
+
+
+
+# DEPR --------------------------------------------------------------------
+
+#
+# x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
+# y <- mrg_assgn(dirlist[2], wks[2], cal_wks)
+# z <- mrg_assgn(dirlist[3], wks[3], cal_wks)
+# q <- bind_rows(x, y, z) %>% arrange(canvas_course_id, canvas_user_id, week)
