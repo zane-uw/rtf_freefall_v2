@@ -41,7 +41,7 @@ cal_wks <- fetch_cal_wks()
 
 # TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
 
-mrg_assgn <- function(dir, wk){
+mrg_assgn <- function(dir, wk, cal_wks = cal_wks){
   anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
   atypes <- c('nnnTncn')
   navals = c('NA', 'None', 'none', 'NULL')
@@ -50,11 +50,35 @@ mrg_assgn <- function(dir, wk){
   A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
   A <- bind_rows(A)
   A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk) %>%
+    mutate(week = wk,
+           due_date = lubridate::floor_date(due_at, unit = "day")) %>%
     replace_na(list(pts_possible = 0, score = 0))
 
-  return(A)
+  # >> diverge here to make two diff streams for student and course before re-combining them <<
+  ## STUDENT
+  stu <- A %>%
+    group_by(canvas_user_id, canvas_course_id, week) %>%
+    summarize(score = sum(score)) %>%
+    ungroup()
+
+  ## COURSE
+  crs <- A %>%
+    inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
+                               'week' = 'AcademicQtrWeekNum')) %>%
+    select(week, canvas_course_id, assgn_id, pts_possible) %>%
+    distinct() %>%
+    group_by(canvas_course_id, week) %>%
+    summarize(n_assign = n_distinct(assgn_id),
+              wk_pts_poss = sum(pts_possible)) %>%
+    ungroup()
+
+  res <- full_join(stu, crs) %>%
+    mutate(score = if_else(score < 0, 0, score)) %>%
+    replace_na(list(n_assign = 0,
+                    wk_pts_poss = 0))
+  return(res)
 }
+
 
 mrg_partic <- function(dir, wk) {
   pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
@@ -73,42 +97,13 @@ mrg_partic <- function(dir, wk) {
   return(P)
 }
 
-# Use the calendar to calculate week + course vars
-# Pts possible this week; number of assignments with a due date in this week
-mrg_crs_vars <- function(dir, wk, cal_wks = cal_wks){
-  anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
-  atypes <- c('nnnTncn')
-  navals = c('NA', 'None', 'none', 'NULL')
-  afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
-
-  A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
-  A <- bind_rows(A)
-  A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk,
-           due_date = lubridate::floor_date(due_at, unit = "day")) %>%
-    replace_na(list(pts_possible = 0, score = 0)) %>%
-    inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
-                               'week' = 'AcademicQtrWeekNum')) # %>%
-    # filter(AcademicQtrWeekNum == week)
-
-  res <- A %>%
-    select(week, canvas_course_id, assgn_id, pts_possible) %>%
-    distinct() %>%
-    group_by(canvas_course_id, week) %>%
-    summarize(n_assign = n_distinct(assgn_id),
-              wk_pts_poss = sum(pts_possible)) %>%
-    ungroup()
-
-  return(res)
-}
-
-
-# TODO: Loops for all partic, assignments
-
-
-
-
-
+# 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
+# lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
+# and pass the value to the merge fun from above.
+# Then we can merge, cleanup, aggregate, etc.
+a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]], cal_wks))
+# we could probably avoid the dirlist entirely with map() or mapply()
+p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
 
 
 
@@ -180,13 +175,3 @@ fetch_trans <- function(){
 
 tran_list <- fetch_trans()
 
-
-
-
-# DEPR --------------------------------------------------------------------
-
-#
-# x <- mrg_assgn(dirlist[1], wks[1], cal_wks)
-# y <- mrg_assgn(dirlist[2], wks[2], cal_wks)
-# z <- mrg_assgn(dirlist[3], wks[3], cal_wks)
-# q <- bind_rows(x, y, z) %>% arrange(canvas_course_id, canvas_user_id, week)
