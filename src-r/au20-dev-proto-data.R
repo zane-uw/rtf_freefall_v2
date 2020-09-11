@@ -30,8 +30,6 @@ fetch_cal_wks <- function(){
   return(res)
 }
 
-cal_wks <- fetch_cal_wks()
-
 # build data from raw -----------------------------------------------------
 
 # tasks:
@@ -41,7 +39,9 @@ cal_wks <- fetch_cal_wks()
 
 # TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
 
-mrg_assgn <- function(dir, wk, cal_wks = cal_wks){
+mrg_assgn <- function(dir, wk){
+  cal_wks <- fetch_cal_wks()
+
   anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
   atypes <- c('nnnTncn')
   navals = c('NA', 'None', 'none', 'NULL')
@@ -97,39 +97,31 @@ mrg_partic <- function(dir, wk) {
   return(P)
 }
 
-# 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
-# lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
-# and pass the value to the merge fun from above.
-# Then we can merge, cleanup, aggregate, etc.
-a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]], cal_wks))
-# we could probably avoid the dirlist entirely with map() or mapply()
-p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
+# Fetch funs for data from SDB ----------------------------------------
 
-
-
-# fetch quarterly results from SDB ----------------------------------------
-
-# return a named list of transcripts and transcript-courses-taken
+# return transcripts with majors
 fetch_trans <- function(){
   con <- dbConnect(odbc(), 'sqlserver01')
-  # empty list for results
-  res <- list()
 
   mjr <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
-    filter(tran_yr >= 2020,
-           index1 == 1) %>%
-    select(-index1,
+    filter(tran_yr >= 2015,       # arbitrary, should yield sufficient data for students based on starting point
+           index1 == 1) %>%       # this _will_ get proportionally slower with more quarters unless first filtering by
+    select(-index1,               # the desired students
            -tran_evening)
 
   tran <- tbl(con, in_schema('sec', 'transcript')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-    filter(yrq >= 20202) %>%
+           # eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
+    filter(yrq >= 20154,
+           class <= 4,
+           special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
     inner_join(mjr) %>%
     select(system_key,
            yrq,
+           # eop,
            resident,
            class,
-           special_program,
+           # special_program,
            honors_program,
            tenth_day_credits,
            num_courses,
@@ -146,9 +138,22 @@ fetch_trans <- function(){
            tran_major_abbr) %>%
     collect()
 
+  return(tran)
+}
+
+# return transcript-courses-taken
+fetch_tran_courses <- function(){
+  con <- dbConnect(odbc(), 'sqlserver01')
+
+  # create an initial filter w/ eop students
+  my_filt <- tbl(con, in_schema('sec', 'transcript')) %>%
+    filter(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
+    select(system_key)
+
   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-    filter(yrq >= 20202) %>%
+    filter(yrq >= 20154) %>%
+    semi_join(my_filt) %>%
     select(system_key,
            yrq,
            index1,
@@ -167,11 +172,22 @@ fetch_trans <- function(){
     distinct() %>%
     collect()
 
-  res$tran <- tran
-  res$tran_crs <- tran_crs
-
-  return(res)
+  return(tran_crs)
 }
 
-tran_list <- fetch_trans()
 
+# run ---------------------------------------------------------------------
+
+# 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
+# lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
+# and pass the value to the merge fun from above.
+# Then we can merge, cleanup, aggregate, etc.
+a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]]))
+# we could probably avoid the dirlist entirely with map() or mapply()
+p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
+
+a_all <- bind_rows(a_all)
+p_all <- bind_rows(p_all)
+
+tran <- fetch_trans()
+tr_courses <- fetch_tran_courses()
