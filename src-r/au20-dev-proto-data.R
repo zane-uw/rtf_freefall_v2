@@ -12,6 +12,9 @@ data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
 dirlist <- dirlist[-grep('03', dirlist)]
 wks <- seq_along(dirlist)
 
+prov_usr_path <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_09_Sep_2020_1716420200909-18916-180jrta.csv'
+prov_crs_path <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_14_Sep_2020_1719820200914-5303-al9flx.csv'
+
 # fetch calendar weeks ----------------------------------------------------
 # DSN setup
 # VPN
@@ -176,7 +179,7 @@ fetch_tran_courses <- function(){
 }
 
 
-# run ---------------------------------------------------------------------
+# RUN above ---------------------------------------------------------------------
 
 # 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
 # lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
@@ -191,3 +194,53 @@ p_all <- bind_rows(p_all)
 
 tran <- fetch_trans()
 tr_courses <- fetch_tran_courses()
+
+
+# Get/clean canvas provisioning -------------------------------------------
+
+cur_usrs <- c(a_all$canvas_user_id, p_all$canvas_course_id) %>% unique()
+cur_crss <- c(a_all$canvas_course_id, p_all$canvas_course_id) %>% unique()
+
+prov_usrs <- read_csv(prov_usr_path, col_types = 'nc--c------cc') %>% filter(status == 'active', created_by_sis == 'true')
+prov_crss <- read_csv(prov_crs_path, col_types = 'dc-cc--ncc----l') %>% filter(created_by_sis == T, status == 'active')
+
+# TODO finish matching w/ provisioning
+
+link_students <- function(){
+  # danger: a person may have more than 1 canvas ID under the same uw_netid and system_key
+  # lose about 5k with the last distinct
+
+  skeys <- canvas_globs$uid
+
+  prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv')
+  prov_users <- prov_users[prov_users$status == 'active' & prov_users$created_by_sis == T,]
+
+  skeys <- skeys %>% inner_join(prov_users, by = c('canvas_user_id' = 'canvas_user_id')) %>%
+    mutate(sortable_name = str_remove_all(sortable_name, " "))
+
+  db <- tbl(con, in_schema('sec', 'student_1')) %>%
+    filter(last_yr_enrolled >= 2006) %>%
+    # caveat emptor: name_lowc is actually proper noun case, no lower
+    select(system_key, uw_netid, student_name_lowc) %>%
+    collect() %>%
+    # correction(s) necessary for compatability
+    mutate_if(is.character, str_replace_all, pattern = " ", replacement = "")
+
+  # try multiple ways of merging since regid is not accessible w/o dev token to SWS
+  by_netid <- db %>% inner_join(skeys, by = c('uw_netid' = 'login_id')) %>%
+    select(system_key, canvas_user_id, uw_netid)
+
+  # name_lowc to sortable_name looks most promising
+  by_name <- db %>%
+    mutate(student_name_lowc = str_remove_all(student_name_lowc, " ")) %>%
+    inner_join(skeys, by = c('student_name_lowc' = 'sortable_name')) %>%
+    select(system_key, canvas_user_id, uw_netid)
+
+  res <- bind_rows(by_netid, by_name) %>% distinct(system_key, uw_netid, .keep_all = T)
+
+  return(res)
+}
+
+
+# Merging and feat engineering --------------------------------------------
+
