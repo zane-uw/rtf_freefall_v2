@@ -114,17 +114,14 @@ fetch_trans <- function(){
 
   tran <- tbl(con, in_schema('sec', 'transcript')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-           # eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
     filter(yrq >= 20154,
-           class <= 4,
-           special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
-    inner_join(mjr) %>%
+           class <= 4) %>%
+    left_join(mjr) %>%
     select(system_key,
            yrq,
-           # eop,
            resident,
            class,
-           # special_program,
+           special_program,
            honors_program,
            tenth_day_credits,
            num_courses,
@@ -138,25 +135,11 @@ fetch_trans <- function(){
            tran_pathway,
            tran_deg_level,
            tran_deg_type,
-           tran_major_abbr) %>%
-    collect()
-
-  return(tran)
-}
-
-# return transcript-courses-taken
-fetch_tran_courses <- function(){
-  con <- dbConnect(odbc(), 'sqlserver01')
-
-  # create an initial filter w/ eop students
-  my_filt <- tbl(con, in_schema('sec', 'transcript')) %>%
-    filter(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
-    select(system_key)
+           tran_major_abbr)
 
   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
     filter(yrq >= 20154) %>%
-    semi_join(my_filt) %>%
     select(system_key,
            yrq,
            index1,
@@ -172,11 +155,46 @@ fetch_tran_courses <- function(){
            repeat_course,
            writing,
            major_disallowed) %>%
-    distinct() %>%
-    collect()
+    distinct()
 
-  return(tran_crs)
+  res <- tran %>% left_join(tran_crs) %>% collect()
+
+  return(res)
 }
+
+# return transcript-courses-taken
+# fetch_tran_courses <- function(){
+#   con <- dbConnect(odbc(), 'sqlserver01')
+#
+#   # # create an initial filter w/ eop students
+#   # my_filt <- tbl(con, in_schema('sec', 'transcript')) %>%
+#   #   filter(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
+#   #   select(system_key)
+#
+#   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
+#     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
+#     filter(yrq >= 20154) %>%
+#     # semi_join(my_filt) %>%
+#     select(system_key,
+#            yrq,
+#            index1,
+#            dept_abbrev,
+#            course_number,
+#            section_id,
+#            course_credits,
+#            course_branch,
+#            grade_system,    # 0 = standard; 5 = C/NC; 4 = S/NS; 9 = audit
+#            grade,
+#            honor_course,
+#            incomplete,
+#            repeat_course,
+#            writing,
+#            major_disallowed) %>%
+#     distinct() %>%
+#     collect()
+#
+#   return(tran_crs)
+# }
 
 
 # RUN above ---------------------------------------------------------------------
@@ -192,55 +210,65 @@ p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
 a_all <- bind_rows(a_all)
 p_all <- bind_rows(p_all)
 
-tran <- fetch_trans()
-tr_courses <- fetch_tran_courses()
-
-
 # Get/clean canvas provisioning -------------------------------------------
 
-cur_usrs <- c(a_all$canvas_user_id, p_all$canvas_course_id) %>% unique()
-cur_crss <- c(a_all$canvas_course_id, p_all$canvas_course_id) %>% unique()
+# cur_usrs <- c(a_all$canvas_user_id, p_all$canvas_course_id) %>% unique()
+# cur_crss <- c(a_all$canvas_course_id, p_all$canvas_course_id) %>% unique()
 
-prov_usrs <- read_csv(prov_usr_path, col_types = 'nc--c------cc') %>% filter(status == 'active', created_by_sis == 'true')
-prov_crss <- read_csv(prov_crs_path, col_types = 'dc-cc--ncc----l') %>% filter(created_by_sis == T, status == 'active')
+# read provisioning; these currently need periodic updates
+prov_usrs <- read_csv(prov_usr_path, col_types = 'nc--c------cc') %>% filter(status == 'active', created_by_sis == 'true') %>% select(-status, -created_by_sis)
+prov_crss <- read_csv(prov_crs_path, col_types = 'dc-cc--ncc----l') %>% filter(created_by_sis == T, status == 'active') %>% select(-status, -created_by_sis)
+
+# full join assignments and participation, leave NA's
+dat <- full_join(a_all, p_all)
+
+# combine provisioning with dat
+dat <- dat %>% inner_join(prov_crss) %>% inner_join(prov_usrs)
+
+# need keys from EDW
+get_edw_keys <- function(){
+  con <- dbConnect(odbc(), 'sqlserver01')
+  skeys <- tbl(con, in_schema('sec', 'student_1')) %>%
+    select(system_key, uw_netid) %>%
+    collect() %>%
+    mutate_if(is.character, trimws) %>%
+    filter(uw_netid != "")
+
+  return(skeys)
+}
+edw_keys <- get_edw_keys()
 
 # TODO finish matching w/ provisioning
+# link student records:
+# 1) edw <-> merged data on netid = login
+dat <- dat %>% inner_join(edw_keys, by = c('login_id' = 'uw_netid'))
 
-link_students <- function(){
-  # danger: a person may have more than 1 canvas ID under the same uw_netid and system_key
-  # lose about 5k with the last distinct
+# link courses:
+# 1) turn dat/prov into dept + ### with yrq
+xmat <- data.frame(str_split(dat$course_id, '-', simplify = T))
+xmat$qtr <- match(xmat$X2, table = c('winter', 'spring', 'summer', 'autumn'))
+# ymat <- data.frame(str_split(x$course_id, '-', simplify = T))
+dat$course <- paste(xmat$X3, xmat$X4, sep = "_")
+dat$yrq <- as.numeric(paste0(xmat$X1, xmat$qtr))
+dat$section <- xmat$X5
 
-  skeys <- canvas_globs$uid
 
-  prov_users <- read_csv('../../Retention-Analytics-Dashboard/data-raw/provisioning_csv_30_Mar_2020_15884/users.csv')
-  prov_users <- prov_users[prov_users$status == 'active' & prov_users$created_by_sis == T,]
-
-  skeys <- skeys %>% inner_join(prov_users, by = c('canvas_user_id' = 'canvas_user_id')) %>%
-    mutate(sortable_name = str_remove_all(sortable_name, " "))
-
-  db <- tbl(con, in_schema('sec', 'student_1')) %>%
-    filter(last_yr_enrolled >= 2006) %>%
-    # caveat emptor: name_lowc is actually proper noun case, no lower
-    select(system_key, uw_netid, student_name_lowc) %>%
-    collect() %>%
-    # correction(s) necessary for compatability
-    mutate_if(is.character, str_replace_all, pattern = " ", replacement = "")
-
-  # try multiple ways of merging since regid is not accessible w/o dev token to SWS
-  by_netid <- db %>% inner_join(skeys, by = c('uw_netid' = 'login_id')) %>%
-    select(system_key, canvas_user_id, uw_netid)
-
-  # name_lowc to sortable_name looks most promising
-  by_name <- db %>%
-    mutate(student_name_lowc = str_remove_all(student_name_lowc, " ")) %>%
-    inner_join(skeys, by = c('student_name_lowc' = 'sortable_name')) %>%
-    select(system_key, canvas_user_id, uw_netid)
-
-  res <- bind_rows(by_netid, by_name) %>% distinct(system_key, uw_netid, .keep_all = T)
-
-  return(res)
-}
-
+rm(xmat, edw_keys)
 
 # Merging and feat engineering --------------------------------------------
 
+# transcript features
+tran <- fetch_trans()
+tran <- tran %>%
+  filter(system_key %in% dat$system_key) %>%
+  mutate_if(is.character, trimws) %>%
+  mutate(eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0),
+         course = paste(dept_abbrev, course_number, sep = "_"))
+
+
+
+
+# Cleanup -----------------------------------------------------------------
+
+# only keep final result (for sourcing file)
+# rm(ls()[which(ls) != "dat)]
