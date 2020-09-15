@@ -157,6 +157,18 @@ fetch_trans <- function(){
            major_disallowed) %>%
     distinct()
 
+  # TODO finish STEM indicator join
+
+  # add STEM CIP indicator to courses
+  stem.courses <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
+    filter(FederalSTEMInd == "Y") %>%
+    select(dept_abbrev = CurriculumCode,
+           course_number = CourseNbr) %>%
+    distinct() %>%
+    mutate(stem_course = 1)
+
+
+
   res <- tran %>% left_join(tran_crs) %>% collect()
 
   return(res)
@@ -261,10 +273,34 @@ rm(xmat, edw_keys)
 tran <- fetch_trans()
 tran <- tran %>%
   filter(system_key %in% dat$system_key) %>%
+  select(-index1) %>%
   mutate_if(is.character, trimws) %>%
   mutate(eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0),
-         course = paste(dept_abbrev, course_number, sep = "_"))
+         course = paste(dept_abbrev, course_number, sep = "_"),
+         numeric_grade = recode(grade,
+                       "A"  = "40",
+                       "A-" = "38",
+                       "B+" = "34",
+                       "B"  = "31",
+                       "B-" = "28",
+                       "C+" = "24",
+                       "C"  = "21",
+                       "C-" = "18",
+                       "D+" = "14",
+                       "D"  = "11",
+                       "D-" = "08",
+                       "E"  = "00",
+                       "F"  = "00"),
+         numeric_grade = as.numeric(numeric_grade) / 10,
+         nonpass_grade = if_else(grade %in% c('HW', 'I', 'NC', 'NS', 'W', 'W3', 'W4', 'W5', 'W6', 'W7'), 1, 0),
+         other_grade = if_else(grade %in% c('CR', 'S', 'N')),
+         major_course = if_else(dept_abbrev == tran_major_abbr, 1, 0),
+         premajor = if_else(grepl("PRE", tran_major_abbr) == T, 1, 0),
+         qtr_gpa = qtr_grade_points / qtr_graded_attmp) %>%
+  mutate_if(is_logical, as.numeric)
 
+# windowed transformations
+# - cumulative sums
 
 
 
