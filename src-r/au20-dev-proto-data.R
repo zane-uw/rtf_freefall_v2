@@ -15,6 +15,14 @@ wks <- seq_along(dirlist)
 prov_usr_path <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_09_Sep_2020_1716420200909-18916-180jrta.csv'
 prov_crs_path <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_14_Sep_2020_1719820200914-5303-al9flx.csv'
 
+
+
+# notes -------------------------------------------------------------------
+
+# basically on day 1 we have resident, class, honors, and special program code
+# so let's assume we can use transcript to calculate _all_ of the above for whoever we need
+# then to predict t_n we'll use t_n-1 b/c when a new quarter begins we won't have current data
+
 # fetch calendar weeks ----------------------------------------------------
 # DSN setup
 # VPN
@@ -171,40 +179,6 @@ fetch_trans <- function(){
 
   return(res)
 }
-
-# return transcript-courses-taken
-# fetch_tran_courses <- function(){
-#   con <- dbConnect(odbc(), 'sqlserver01')
-#
-#   # # create an initial filter w/ eop students
-#   # my_filt <- tbl(con, in_schema('sec', 'transcript')) %>%
-#   #   filter(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
-#   #   select(system_key)
-#
-#   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
-#     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-#     filter(yrq >= 20154) %>%
-#     # semi_join(my_filt) %>%
-#     select(system_key,
-#            yrq,
-#            index1,
-#            dept_abbrev,
-#            course_number,
-#            section_id,
-#            course_credits,
-#            course_branch,
-#            grade_system,    # 0 = standard; 5 = C/NC; 4 = S/NS; 9 = audit
-#            grade,
-#            honor_course,
-#            incomplete,
-#            repeat_course,
-#            writing,
-#            major_disallowed) %>%
-#     distinct() %>%
-#     collect()
-#
-#   return(tran_crs)
-# }
 
 
 # RUN above ---------------------------------------------------------------------
@@ -416,27 +390,108 @@ rm(tr1, trmany, stem, pmaj, maj)
 # - subset transcripts for final dataset
 
 # TODO decide how to deal with this - we won't see most of the 'current' data once registration starts
-subtr <- tran %>%
-  mutate_at(cum_)
-  select(system_key, yrq, eop, resident, class, tenth_day_credits, num_courses, tran_branch, premajor,
-         ft, ft_creds_over, n_qtrs, cum_premaj_qtrs, cum_courses,)
+# Probably should use sr_mini??
+
+# basically on day 1 we have resident, class, honors, and special program code (eop)
+# so let's assume we can use transcript to calculate _all_ of the above for whoever we need
+# then to predict t_n we'll use t_n-1 b/c when a new quarter begins we won't have current data
+# See: registration and regis major
+#  - cf. tenth_day in registration (will be whatever's current)
+#  - regis courses (for qtr) > repeats, n courses, writing, major disallowed (filter on request status),
+#    courses matching major, stem courses
+# to sidestep that issue, lag the yrq by 1 before merging with dat (what I should do is re-write this so that it uses REG for
+# those fields when building the training data)
+
+# split on the vars we can keep that will go with the new q's data
+# TODO finish this
+# TODO write up the mapping so that the `tran` can combine with `reg`
+cur_vars <- tran %>%
+  select(system_key,
+         yrq,
+         eop,
+         resident,
+         class,
+         honors_program,
+         tenth_day_credits,
+         num_courses,
+         tran_branch,
+         premajor,
+         ft,
+         ft_creds_over,
+         n_qtrs,
+         mjr_change,
+         mjr_ch_count)
 
 
-# Finalize merge + cleanup -----------------------------------------------------------------
+lagvars <- tran %>%
+  select(system_key,
+         yrq,
+         cum_premaj_qtrs,
+         cum_courses,
+         cum_grdpts,
+         cum_attmp,
+         cum_nongrd,
+         cum_gpa,
+         cum_honors,
+         )
 
 
-dat <- dat %>%
-  left_join( select(tran,
-                    system_key,
-                    yrq,
-                    resident,
-                    class,
-                    eop,
-                    honors_program,
-                    tenth_day_credits,
-                    num_courses,
-                    ) )
 
 
-# only keep final result (for sourcing file)
-# rm(ls()[which(ls) != "dat)]
+# TODO DEV registration query ---------------------------------------------
+
+
+# TODO develop pull of reg data for end-yrq, transcript should ONLY be things we would observe for a quarter that isn't finished yet
+con <- dbConnect(odbc(), 'sqlserver01')
+
+reg <- tbl(con, in_schema('sec', 'registration')) %>%
+  filter(regis_yr >= 2015, regis_qtr >= 1,
+         regis_class <= 4) %>%
+  mutate(yrq = regis_yr*10 + regis_qtr,
+         eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
+  select(system_key,
+         yrq,
+         resident,
+         eop,
+         class = regis_class,
+         pc = pending_class,   # TODO - check on which to use - i think pmax of reg_class and transcript class, pending is T/F
+         tenth_day_credits) %>%
+  # mutate()
+  collect()
+
+regmaj <- tbl(con, in_schema('sec', 'registration_regis_col_major')) %>%
+  mutate(yrq = regis_yr*10 + regis_qtr) %>%
+  select() %>%
+  collect()
+
+
+
+regcr <- tbl(con, in_schema('sec', 'registration_courses')) %>%
+  filter(regis_yr == 2020, regis_qtr == 4) %>%
+  collect()
+
+         # make available fields for model from regis data for a qtr w/ no transcripts
+
+
+
+
+
+#
+# # Finalize merge + cleanup -----------------------------------------------------------------
+#
+#
+# dat <- dat %>%
+#   left_join( select(tran,
+#                     system_key,
+#                     yrq,
+#                     resident,
+#                     class,
+#                     eop,
+#                     honors_program,
+#                     tenth_day_credits,
+#                     num_courses,
+#                     ) )
+#
+#
+# # only keep final result (for sourcing file)
+# # rm(ls()[which(ls) != "dat)]
