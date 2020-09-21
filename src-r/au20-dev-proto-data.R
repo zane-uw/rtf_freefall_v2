@@ -44,7 +44,7 @@ fetch_cal_wks <- function(){
 # FUN to build assignment and participation data from raw api result files -----------------------------------------------------
 # list directories:
 #   for each directory:
-       # combine the grades and assignments; adding the week #
+# combine the grades and assignments; adding the week #
 
 # TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
 
@@ -267,18 +267,18 @@ fetch_reg_data <- function(){
     mutate(ft = if_else(credits >= 12, 1, 0),
            ft_creds_over = credits - 12,
            premajor = if_else(grepl("PRE|EPRMJ", major_abbr) == T, 1, 0))
-    # replace_na(list(resident = 0,
-    #                 num_holds = 0,
-    #                 spp_qtrs_used = 0,
-    #                 n_mjr_crs = 0,
-    #                 n_stem_crs = 0,
-    #                 tot_fees = 0,
-    #                 n_courses = 0,
-    #                 n_nstd_grd = 0,
-    #                 n_honors = 0,
-    #                 n_major_disallowed = 0,
-    #                 n_repeat = 0,
-    #                 ))
+  # replace_na(list(resident = 0,
+  #                 num_holds = 0,
+  #                 spp_qtrs_used = 0,
+  #                 n_mjr_crs = 0,
+  #                 n_stem_crs = 0,
+  #                 tot_fees = 0,
+  #                 n_courses = 0,
+  #                 n_nstd_grd = 0,
+  #                 n_honors = 0,
+  #                 n_major_disallowed = 0,
+  #                 n_repeat = 0,
+  #                 ))
   return(reg_data)
 }
 reg_data <- fetch_reg_data()
@@ -293,6 +293,8 @@ reg_data <- fetch_reg_data()
 # don't include information that we wouldn't be able to know at the _beginning_ of the time period for the training data
 # Some can be solved with lag for accumulated queries (and we will want that 20202 data for 20204)
 fetch_trans <- function(){
+  # dat_keys <- unique(!!dat$system_key)
+
   con <- dbConnect(odbc(), 'sqlserver01')
 
   mjr <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
@@ -303,8 +305,10 @@ fetch_trans <- function(){
 
   tran <- tbl(con, in_schema('sec', 'transcript')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-    filter(yrq >= 20154,
-           class <= 4) %>%
+    filter(yrq >= 20154) %>% # ,
+    # class <= 4) %>%
+    semi_join( dat %>% select(system_key) %>% distinct(),
+               by = c('system_key' = 'system_key'), copy = T) %>%
     left_join(mjr) %>%
     select(system_key,
            yrq,
@@ -359,9 +363,6 @@ fetch_trans <- function(){
 
   return(res)
 }
-
-
-# RUN above ---------------------------------------------------------------------
 
 # 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
 # lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
@@ -431,19 +432,19 @@ tran <- tranraw %>%
   replace_na(list(stem_course = 0)) %>%
   mutate(course = paste(dept_abbrev, course_number, sep = "_"),
          numeric_grade = recode(grade,
-                       "A"  = "40",
-                       "A-" = "38",
-                       "B+" = "34",
-                       "B"  = "31",
-                       "B-" = "28",
-                       "C+" = "24",
-                       "C"  = "21",
-                       "C-" = "18",
-                       "D+" = "14",
-                       "D"  = "11",
-                       "D-" = "08",
-                       "E"  = "00",
-                       "F"  = "00"),
+                                "A"  = "40",
+                                "A-" = "38",
+                                "B+" = "34",
+                                "B"  = "31",
+                                "B-" = "28",
+                                "C+" = "24",
+                                "C"  = "21",
+                                "C-" = "18",
+                                "D+" = "14",
+                                "D"  = "11",
+                                "D-" = "08",
+                                "E"  = "00",
+                                "F"  = "00"),
          numeric_grade = as.numeric(numeric_grade) / 10,
          nonpass_grade = if_else(grade %in% c('HW', 'I', 'NC', 'NS', 'W', 'W3', 'W4', 'W5', 'W6', 'W7'), 1, 0),
          w_grade = if_else(grepl("W", grade) == T, 1, 0),
@@ -474,7 +475,7 @@ tr1 <- tran %>%
          csum_grdpts = cumsum(qtr_grade_points),
          csum_attmp = cumsum(qtr_graded_attmp),
          csum_nongrd = cumsum(qtr_nongrd_earned),
-         cum_gpa = cum_grdpts / cum_attmp,
+         cum_gpa = csum_grdpts / csum_attmp,
          csum_honors = cumsum(honors_program),
          mjr_change = if_else(tran_major_abbr == lag(tran_major_abbr), 0, 1),
          mjr_change = replace_na(mjr_change, 0),
@@ -582,7 +583,6 @@ lagvars <- vars(qtr_gpa,
                 mean_grd,
                 starts_with('csum_'),
                 mean_stem_grd)
-# TODO mutate_at: lagvars
 tran_data <- tran %>%
   select(system_key,
          yrq,
@@ -593,25 +593,24 @@ tran_data <- tran %>%
          credits = tenth_day_credits,
          num_courses,
          n_qtrs,
-         )
-  mutate_at(lagvars, lag)
+         premajor,
+         ft,
+         ft_creds_over,
+         !!!lagvars) %>%     # note: need to unquote list created by `vars` w/in select here but see below
+  group_by(system_key) %>%
+  arrange(system_key, yrq) %>%
+  mutate_at(lagvars, lag)   # however, mutate_at isn't bothered by the expression created by vars. This is all consistent if somewhat opaque and confusing
 
-#
-# # Finalize merge + cleanup -----------------------------------------------------------------
-#
-#
-# dat <- dat %>%
-#   left_join( select(tran,
-#                     system_key,
-#                     yrq,
-#                     resident,
-#                     class,
-#                     eop,
-#                     honors_program,
-#                     tenth_day_credits,
-#                     num_courses,
-#                     ) )
-#
-#
+# Finalize merge + cleanup -----------------------------------------------------------------
+
+omad_target <- tran %>% filter(yrq == max(dat$yrq)) %>%
+  group_by(system_key) %>%
+  transmute(target = if_else(qtr_gpa <= 2.5 | n_w > 0 | n_nonpass > 0, 1, 0))
+
+out_dat <- dat %>%
+  left_join(tran_data) %>%
+  left_join(omad_target)
+
 # # only keep final result (for sourcing file)
-# # rm(ls()[which(ls) != "dat)]
+# rm(ls()[which(ls() != 'dat')])
+write_csv(dat, 'data-prepped/ffv2-scratch-py-data.csv')
