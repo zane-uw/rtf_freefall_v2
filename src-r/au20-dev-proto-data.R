@@ -613,4 +613,4 @@ out_dat <- dat %>%
 
 # # only keep final result (for sourcing file)
 # rm(ls()[which(ls() != 'dat')])
-write_csv(dat, 'data-prepped/ffv2-scratch-py-data.csv')
+out_dat %>% filter(week == 1) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
