@@ -281,9 +281,6 @@ fetch_reg_data <- function(){
   #                 ))
   return(reg_data)
 }
-reg_data <- fetch_reg_data()
-
-
 
 # transcript data ---------------------------------------------------------
 
@@ -293,9 +290,12 @@ reg_data <- fetch_reg_data()
 # don't include information that we wouldn't be able to know at the _beginning_ of the time period for the training data
 # Some can be solved with lag for accumulated queries (and we will want that 20202 data for 20204)
 fetch_trans <- function(){
-  # dat_keys <- unique(!!dat$system_key)
 
   con <- dbConnect(odbc(), 'sqlserver01')
+
+  filter_table <- copy_to(con,
+                          df = dat %>% select(system_key) %>% distinct(),
+                          overwrite = T)
 
   mjr <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
     filter(tran_yr >= 2015,       # arbitrary, should yield sufficient data for students based on starting point
@@ -305,10 +305,14 @@ fetch_trans <- function(){
 
   tran <- tbl(con, in_schema('sec', 'transcript')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
-    filter(yrq >= 20154) %>% # ,
+    filter(yrq >= 20154,
+           !(tenth_day_credits == 0 &
+               qtr_grade_points == 0 &
+               qtr_graded_attmp == 0 &
+               qtr_nongrd_earned == 0 &
+               qtr_deductible == 0)) %>% # ,
     # class <= 4) %>%
-    semi_join( dat %>% select(system_key) %>% distinct(),
-               by = c('system_key' = 'system_key'), copy = T) %>%
+    semi_join(filter_table) %>%
     left_join(mjr) %>%
     select(system_key,
            yrq,
@@ -329,11 +333,51 @@ fetch_trans <- function(){
            # tran_deg_level,
            # tran_deg_type,
            tran_major_abbr) %>%
-    mutate(resident = if_else(resident %in% c(1, 2), 1, 0))
+    mutate(resident = if_else(resident %in% c(1, 2), 1, 0)) %>%
+    collect() %>%
+    mutate_if(is.character, trimws) %>%
+    mutate_if(is_logical, as.numeric) %>%
+    mutate(resident = if_else(resident %in% c(1, 2), 1, 0),
+           premajor = if_else(grepl("PRE|EPRMJ", tran_major_abbr) == T, 1, 0),
+           qtr_gpa = qtr_grade_points / qtr_graded_attmp,
+           ft = if_else(qtr_graded_attmp + qtr_nongrd_earned >= 12 | tenth_day_credits >= 12, 1, 0),
+           ft_creds_over = pmax(tenth_day_credits, (qtr_graded_attmp + qtr_nongrd_earned)) - 12,
+           eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
+    # windowed transformationst
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    mutate(n_qtrs = row_number(yrq),
+           csum_premaj_qtrs = cumsum(premajor),
+           csum_courses = cumsum(num_courses),
+           csum_grdpts = cumsum(qtr_grade_points),
+           csum_attmp = cumsum(qtr_graded_attmp),
+           csum_nongrd = cumsum(qtr_nongrd_earned),
+           cum_gpa = csum_grdpts / csum_attmp,
+           csum_honors = cumsum(honors_program),
+           mjr_change = if_else(tran_major_abbr == lag(tran_major_abbr), 0, 1),
+           mjr_change = replace_na(mjr_change, 0),
+           mjr_ch_count = cumsum(mjr_change)) %>%
+    ungroup()
+
+
+
+
+  # transcript courses query, aggr ------------------------------------------
+
+  # add STEM CIP indicator to courses
+  stem_courses <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
+    filter(FederalSTEMInd == "Y") %>%
+    select(dept_abbrev = CurriculumCode,
+           course_number = CourseNbr) %>%
+    distinct() %>%
+    mutate(stem_course = 1)
 
   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
     filter(yrq >= 20154) %>%
+    semi_join(filter_table) %>%
+    left_join(stem_courses) %>%
+    left_join(mjr) %>%
     select(system_key,
            yrq,
            index1,
@@ -348,21 +392,143 @@ fetch_trans <- function(){
            incomplete,      # lag
            repeat_course,
            writing,         # lag - this doesn't show in timely fashion in registration data so we won't know
-           major_disallowed) %>%
-    distinct()
-
-  # add STEM CIP indicator to courses
-  stem_courses <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
-    filter(FederalSTEMInd == "Y") %>%
-    select(dept_abbrev = CurriculumCode,
-           course_number = CourseNbr) %>%
+           major_disallowed,
+           stem_course,
+           tran_major_abbr) %>%
     distinct() %>%
-    mutate(stem_course = 1)
+    collect() %>%
+    mutate_if(is.character, trimws) %>%
+    mutate_if(is_logical, as.numeric) %>%
+    replace_na(list(stem_course = 0)) %>%
+    mutate(course = paste(dept_abbrev, course_number, sep = "_"),
+           numeric_grade = recode(grade,
+                                  "A"  = "40",
+                                  "A-" = "38",
+                                  "B+" = "34",
+                                  "B"  = "31",
+                                  "B-" = "28",
+                                  "C+" = "24",
+                                  "C"  = "21",
+                                  "C-" = "18",
+                                  "D+" = "14",
+                                  "D"  = "11",
+                                  "D-" = "08",
+                                  "E"  = "00",
+                                  "F"  = "00"),
+           numeric_grade = as.numeric(numeric_grade) / 10,
+           nonpass_grade = if_else(grade %in% c('HW', 'I', 'NC', 'NS', 'W', 'W3', 'W4', 'W5', 'W6', 'W7'), 1, 0),
+           w_grade = if_else(grepl("W", grade) == T, 1, 0),
+           major_course = if_else(dept_abbrev == tran_major_abbr, 1, 0))
 
-  res <- tran %>% left_join(tran_crs) %>% left_join(stem_courses) %>% collect()
 
+  # agg the courses data up to 1-row per quarter
+  agg_tran_crs <- tran_crs %>%
+    # calculate major+class (best we can do w/o degree audit or requirements data)
+    # We know that this has different meaning for various majors, in part correlates with how deterministic the
+    # degree requirements are for a program
+    group_by(system_key, yrq) %>%
+    # summarize by n __ in quarter, then gen cumsums
+    summarize(mean_grd = mean(numeric_grade, na.rm = T),
+              n_nonpass = sum(nonpass_grade, na.rm = T),
+              n_w = sum(w_grade, na.rm = T),
+              n_mjr_crs = sum(major_course, na.rm = T),
+              n_mjr_disallowed = sum(major_disallowed, na.rm = T),
+              n_writing = sum(writing, na.rm = T),
+              n_repeat = sum(repeat_course, na.rm = T)) %>%
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    # Q: keep n_ or just csum?
+    mutate(csum_nonpass = cumsum(n_nonpass),
+           csum_w = cumsum(n_w),
+           csum_mjr_crs = cumsum(n_mjr_crs),
+           csum_mjr_disallowed = cumsum(n_mjr_disallowed),
+           csum_writing = cumsum(n_writing),
+           csum_repeat = cumsum(n_repeat)) %>%
+    ungroup()
+
+  # TODO LEFT OFF HERE
+  # STEM, PREMAJ, MAJ gpa, credit calculations
+  stem <- tran_crs %>%
+    filter(stem_course == 1,
+           !is.na(numeric_grade)) %>%
+    mutate(stem_pts = numeric_grade * course_credits) %>%
+    group_by(system_key, yrq) %>%
+    summarize(n_stem_crs = n(),
+              stem_credits = sum(course_credits, na.rm = T),
+              stem_pts = sum(stem_pts),
+              stem_gpa = stem_pts / stem_credits) %>%
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    mutate(csum_stem_crs = cumsum(n_stem_crs),
+           csum_stem_creds = cumsum(stem_credits),
+           cum_stem_gpa = cumsum(stem_pts) / cumsum(stem_credits))
+
+  pmaj <- tran %>%
+    filter(premajor == 1) %>%
+    distinct(system_key, yrq, qtr_grade_points, qtr_graded_attmp) %>%
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    mutate(pmaj_qtr_gpa = qtr_grade_points / qtr_graded_attmp,
+           cum_pmaj_gpa = cumsum(qtr_grade_points) / cumsum(qtr_graded_attmp)) %>%
+    select(-qtr_grade_points, -qtr_graded_attmp) %>%
+    ungroup()
+
+  maj <- tran_crs %>%
+    filter(major_course == 1,
+           !is.na(numeric_grade)) %>%
+    distinct(system_key, yrq, course, course_credits, numeric_grade) %>%
+    mutate(gp = numeric_grade * course_credits) %>%
+    group_by(system_key, yrq) %>%
+    summarize(sum_attmp = sum(course_credits),
+              sum_gp = sum(gp),
+              maj_qtr_gpa = sum(gp) / sum(course_credits)) %>%
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    mutate(cum_maj_gpa = cumsum(sum_gp) / cumsum(sum_attmp)) %>%
+    select(-sum_attmp, -sum_gp) %>%
+    ungroup()
+
+  ##
+  # Recombine
+  ##
+  tran <- tran %>%
+    inner_join(agg_tran_crs) %>%
+    left_join(stem) %>%
+    left_join(pmaj) %>%
+    left_join(maj) %>%
+    replace_na(list(n_stem_crs = 0)) %>%
+    group_by(system_key) %>%
+    arrange(system_key, yrq) %>%
+    fill(stem_gpa, cum_pmaj_gpa, cum_maj_gpa, cum_stem_gpa)
+
+  # NAN/NA aren't the same but this simplifies understanding later when trying to use the data b/c NAN values
+  # create problems with funs or reading data into python which may not be obvious
+  tran <- data.frame(lapply(tran, function(x) replace(x, is.nan(x), NA)))
+  train_target <- tran_crs %>%
+    mutate(target = case_when(
+      grade == '' ~ 1,
+      nonpass_grade == 1 ~ 1,
+      numeric_grade <= 2.5 ~ 1,
+      T ~ 0),
+      std_grading = if_else(grade_system == 0, 1, 0)) %>%
+    select(system_key,          # also keep some relevant information about a course
+           yrq,
+           course,
+           numeric_grade,       # may want this as an optional target
+           target,
+           std_grading,
+           stem_course,
+           writing,
+           repeat_course,
+           major_course)
+
+  res <- list('tran' = tran, 'train_target' = train_target)
   return(res)
 }
+
+
+# aggregate assignment/partic files ---------------------------------------
+
 
 # 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
 # lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
@@ -407,7 +573,17 @@ create_dat_from_canvas <- function(){
 
 }
 
+
+
+
+# >> run data and transcript funs << --------------------------------------------
+
 dat <- create_dat_from_canvas()
+dat <- dat %>% select(system_key, yrq, course, short_name, week:tot_assgn_floating) %>% distinct()
+tran <- fetch_trans()             # reminder - this is a named list
+# TODO see above re: this data
+# reg_data <- fetch_reg_data()
+
 
 # Merging, FE w/ transcript data --------------------------------------------
 
@@ -415,149 +591,6 @@ dat <- create_dat_from_canvas()
 # need to not include data that wouldn't be known, either by lagging before merging or by being careful about removing
 # vars from queries
 
-tranraw <- fetch_trans()
-
-ndfilt <- if_else(tranraw$tenth_day_credits == 0 &
-                    tranraw$qtr_grade_points == 0 &
-                    tranraw$qtr_graded_attmp == 0 &
-                    tranraw$qtr_nongrd_earned == 0 &
-                    tranraw$qtr_deductible == 0, T, F)
-tranraw <- tranraw[!ndfilt,]
-rm(ndfilt)
-
-tran <- tranraw %>%
-  filter(system_key %in% dat$system_key) %>%
-  select(-index1) %>%
-  mutate_if(is.character, trimws) %>%
-  replace_na(list(stem_course = 0)) %>%
-  mutate(course = paste(dept_abbrev, course_number, sep = "_"),
-         numeric_grade = recode(grade,
-                                "A"  = "40",
-                                "A-" = "38",
-                                "B+" = "34",
-                                "B"  = "31",
-                                "B-" = "28",
-                                "C+" = "24",
-                                "C"  = "21",
-                                "C-" = "18",
-                                "D+" = "14",
-                                "D"  = "11",
-                                "D-" = "08",
-                                "E"  = "00",
-                                "F"  = "00"),
-         numeric_grade = as.numeric(numeric_grade) / 10,
-         nonpass_grade = if_else(grade %in% c('HW', 'I', 'NC', 'NS', 'W', 'W3', 'W4', 'W5', 'W6', 'W7'), 1, 0),
-         w_grade = if_else(grepl("W", grade) == T, 1, 0),
-         major_course = if_else(dept_abbrev == tran_major_abbr, 1, 0),
-         #
-         # these are of the 1-record-per-qtr variety
-         #
-         premajor = if_else(grepl("PRE|EPRMJ", tran_major_abbr) == T, 1, 0),
-         qtr_gpa = qtr_grade_points / qtr_graded_attmp,
-         ft = if_else(qtr_graded_attmp + qtr_nongrd_earned >= 12 | tenth_day_credits >= 12, 1, 0),
-         ft_creds_over = pmax(tenth_day_credits, (qtr_graded_attmp + qtr_nongrd_earned)) - 12,
-         eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
-  mutate_if(is_logical, as.numeric)
-
-
-# windowed transformations
-# - going to split transcript/courses again to apply some different calculations
-#   -- be careful not to over-count the transcript v. courses data (multiple rows per quarter/student here)
-tr1 <- tran %>%
-  select(system_key:tran_major_abbr, eop, premajor, qtr_gpa, ft, ft_creds_over) %>%
-  distinct() %>%
-  group_by(system_key) %>%
-  arrange(system_key, yrq) %>%
-  # TODO lag these as required for training data
-  mutate(n_qtrs = row_number(yrq),
-         csum_premaj_qtrs = cumsum(premajor),
-         csum_courses = cumsum(num_courses),
-         csum_grdpts = cumsum(qtr_grade_points),
-         csum_attmp = cumsum(qtr_graded_attmp),
-         csum_nongrd = cumsum(qtr_nongrd_earned),
-         cum_gpa = csum_grdpts / csum_attmp,
-         csum_honors = cumsum(honors_program),
-         mjr_change = if_else(tran_major_abbr == lag(tran_major_abbr), 0, 1),
-         mjr_change = replace_na(mjr_change, 0),
-         mjr_ch_count = cumsum(mjr_change)) %>%
-  ungroup()
-
-# agg the courses data up to 1-row per quarter
-trmany <- tran %>%
-  select(system_key, yrq, tran_major_abbr, dept_abbrev:major_course) %>%
-  # calculate major+class (best we can do w/o degree audit or requirements data)
-  # We know that this has different meaning for various majors, in part correlates with how deterministic the
-  # degree requirements are for a program
-  # mutate(crs_equal_mjr = if_else(dept_abbrev == tran_major_abbr, 1, 0)) %>%
-  # aggregate/summarize
-  group_by(system_key, yrq) %>%
-  summarize(mean_grd = mean(numeric_grade, na.rm = T),
-            n_nonpass = sum(nonpass_grade, na.rm = T),
-            n_w = sum(w_grade, na.rm = T),
-            # n_stem_crs = sum(stem_course),
-            n_mjr_crs = sum(major_course, na.rm = T),
-            n_mjr_disallowed = sum(major_disallowed, na.rm = T),
-            n_writing = sum(writing, na.rm = T),
-            n_repeat = sum(repeat_course, na.rm = T)) %>%
-  group_by(system_key) %>%
-  arrange(system_key, yrq) %>%
-  mutate(csum_nonpass = cumsum(n_nonpass),
-         csum_w = cumsum(n_w),
-         csum_mjr_crs = cumsum(n_mjr_crs),
-         csum_mjr_disallowed = cumsum(n_mjr_disallowed),
-         csum_writing = cumsum(n_writing),
-         csum_repeat = cumsum(n_repeat)) %>%
-  ungroup()
-
-# STEM, PREMAJ, MAJ gpa, credit calculations
-stem <- tran %>%
-  filter(stem_course == 1) %>%
-  group_by(system_key, yrq) %>%
-  summarize(n_stem_crs = n(),
-            mean_stem_grd = mean(numeric_grade, na.rm = T))  # TODO figure out what to do with W's here
-
-pmaj <- tran %>%
-  filter(premajor == 1) %>%
-  distinct(system_key, yrq, qtr_grade_points, qtr_graded_attmp) %>%
-  group_by(system_key) %>%
-  arrange(system_key, yrq) %>%
-  mutate(pmaj_qtr_gpa = qtr_grade_points / qtr_graded_attmp,
-         cum_pmaj_gpa = cumsum(qtr_grade_points) / cumsum(qtr_graded_attmp)) %>%
-  select(-qtr_grade_points, -qtr_graded_attmp) %>%
-  ungroup()
-
-maj <- tran %>%
-  filter(major_course == 1,
-         !is.na(numeric_grade)) %>%
-  distinct(system_key, yrq, course, course_credits, numeric_grade) %>%
-  mutate(gp = numeric_grade * course_credits) %>%
-  group_by(system_key, yrq) %>%
-  summarize(sum_attmp = sum(course_credits),
-            sum_gp = sum(gp),
-            maj_qtr_gpa = sum(gp) / sum(course_credits)) %>%
-  group_by(system_key) %>%
-  mutate(cum_maj_gpa = cumsum(sum_gp) / cumsum(sum_attmp)) %>%
-  select(-sum_attmp, -sum_gp) %>%
-  ungroup()
-
-##
-# Recombine
-##
-tran <- tr1 %>%
-  inner_join(trmany) %>%
-  left_join(stem) %>%
-  left_join(pmaj) %>%
-  left_join(maj) %>%
-  replace_na(list(n_stem_crs = 0)) %>%
-  group_by(system_key) %>%
-  arrange(system_key, yrq) %>%
-  mutate(csum_stem_courses = cumsum(n_stem_crs)) %>%
-  fill(mean_stem_grd, cum_pmaj_gpa, cum_maj_gpa)
-
-# NAN/NA aren't the same but this simplifies understanding later when trying to use the data b/c NAN values
-# create problems with funs or reading data into python which may not be obvious
-tran <- data.frame(lapply(tran, function(x) replace(x, is.nan(x), NA)))
-rm(tranraw, tr1, trmany, stem, pmaj, maj)
 
 # remember, we won't know cumulative information for the data we're trying to predict
 # - subset transcripts for final dataset
@@ -578,19 +611,18 @@ rm(tranraw, tr1, trmany, stem, pmaj, maj)
 
 lagvars <- vars(qtr_gpa,
                 starts_with('cum_'),
-                mjr_change,
-                mjr_ch_count,
-                mean_grd,
-                starts_with('csum_'),
-                mean_stem_grd)
-tran_data <- tran %>%
+                # mjr_change,
+                # mjr_ch_count,
+                # mean_grd,
+                starts_with('csum_'))
+tran_data <- tran$tran %>%
   select(system_key,
          yrq,
          eop,
          resident,
          class,
          honors_program,
-         credits = tenth_day_credits,
+         credits = tenth_day_credits,     # renaming for compatibility with reg data
          num_courses,
          n_qtrs,
          premajor,
@@ -603,14 +635,10 @@ tran_data <- tran %>%
 
 # Finalize merge + cleanup -----------------------------------------------------------------
 
-omad_target <- tran %>% filter(yrq == max(dat$yrq)) %>%
-  group_by(system_key) %>%
-  transmute(target = if_else(qtr_gpa <= 2.5 | n_w > 0 | n_nonpass > 0, 1, 0))
-
 out_dat <- dat %>%
   left_join(tran_data) %>%
-  left_join(omad_target)
+  left_join(tran$train_target %>% distinct(system_key, yrq, course, .keep_all = T))
 
 # # only keep final result (for sourcing file)
 # rm(ls()[which(ls() != 'dat')])
-out_dat %>% filter(week == 1) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
+out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
