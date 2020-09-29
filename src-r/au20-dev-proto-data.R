@@ -582,7 +582,9 @@ dat <- create_dat_from_canvas()
 dat <- dat %>% select(system_key, yrq, course, short_name, week:tot_assgn_floating) %>% distinct()
 tran <- fetch_trans()             # reminder - this is a named list
 # TODO see above re: this data
-# reg_data <- fetch_reg_data()
+# reg_data for _new_ preds needs to have names standardized with transcript file fields
+# class might be a problem b/c of pending updates that result in a lot of 0's
+reg_data <- fetch_reg_data()
 
 
 # Merging, FE w/ transcript data --------------------------------------------
@@ -608,6 +610,7 @@ tran <- fetch_trans()             # reminder - this is a named list
 # split on the vars we can keep that will go with the new q's data
 # TODO finish this
 # TODO write up the mapping so that the `tran` can combine with `reg`
+# TODO will also need course info for new quarter
 
 lagvars <- vars(qtr_gpa,
                 starts_with('cum_'),
