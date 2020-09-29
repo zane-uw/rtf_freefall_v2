@@ -643,15 +643,33 @@ out_dat <- dat %>%
   left_join(trans_training_data) %>%
   left_join(tran$train_target %>% distinct(system_key, yrq, course, .keep_all = T))
 
+# TODO aggregate out_dat to make a model for overall outcome as before, not class-level -- then fetch registration class data so that we can do both models
 # # only keep final result (for sourcing file)
 # rm(ls()[which(ls() != 'dat')])
-out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
 
+
+TEST <- dat %>% filter(week == 1) %>%
+  group_by(system_key) %>%
+  summarize(across(c(score, n_assign, wk_pts_poss, page_views, page_views_level, partic, partic_level), mean),
+            across(starts_with('tot_'), sum))
+test_target <- tran$train_target %>%
+  filter(yrq == 20202) %>%
+  group_by(system_key) %>%
+  summarize(across(c(target), max),
+            across(c(std_grading, stem_course, writing, repeat_course, major_course), sum, .names = 'n_{.col}')) %>%
+# aligning names with reg_data
+  rename()
+
+
+
+
+# out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
 
 
 # NEW prediction data -----------------------------------------------------
 # TODO import new CANVAS data
-
+# we won't have numeric_grade or target of course but also, if we're going to do it by course we need
+# std_grading, stem_course, writing, repeat_course, major_course
 new_pred_data <- reg_data %>%
   select(system_key,
          yrq,
@@ -666,7 +684,8 @@ new_pred_data <- reg_data %>%
          premajor) %>%
   left_join( tran$tran %>%
                filter(yrq == 20202) %>%
-               select(system_key, n_qtrs, starts_with('cum'), starts_with('csum'))
-             )
+               select(system_key, n_qtrs, !!!lagvars),
+             by = c('system_key' = 'system_key'))
 
 setdiff(names(new_pred_data), names(out_dat))
+setdiff(names(out_dat), names(new_pred_data))
