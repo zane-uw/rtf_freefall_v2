@@ -143,7 +143,7 @@ fetch_reg_data <- function(){
            yrq,
            # resident,
            # eop,
-           special_program,
+           # special_program,
            regis_ncr,
            regis_class,
            # pc = pending_class,   # TODO - check on which to use - i think pmax of reg_class and transcript class, pending is T/F
@@ -169,7 +169,7 @@ fetch_reg_data <- function(){
     select(system_key,
            uw_netid,
            projected_class,
-           spcl_program,
+           spcl_program,     # use this, NOT registration
            class,
            resident,
            num_holds,
@@ -619,7 +619,7 @@ lagvars <- vars(qtr_gpa,
                 # mjr_ch_count,
                 # mean_grd,
                 starts_with('csum_'))
-tran_data <- tran$tran %>%
+trans_training_data <- tran$tran %>%
   select(system_key,
          yrq,
          eop,
@@ -640,9 +640,33 @@ tran_data <- tran$tran %>%
 # Finalize merge + cleanup -----------------------------------------------------------------
 
 out_dat <- dat %>%
-  left_join(tran_data) %>%
+  left_join(trans_training_data) %>%
   left_join(tran$train_target %>% distinct(system_key, yrq, course, .keep_all = T))
 
 # # only keep final result (for sourcing file)
 # rm(ls()[which(ls() != 'dat')])
 out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
+
+
+
+# NEW prediction data -----------------------------------------------------
+# TODO import new CANVAS data
+
+new_pred_data <- reg_data %>%
+  select(system_key,
+         yrq,
+         # uw_netid,
+         class,
+         resident,
+         eop,
+         credits,
+         num_courses,
+         ft,
+         ft_creds_over,
+         premajor) %>%
+  left_join( tran$tran %>%
+               filter(yrq == 20202) %>%
+               select(system_key, n_qtrs, starts_with('cum'), starts_with('csum'))
+             )
+
+setdiff(names(new_pred_data), names(out_dat))
