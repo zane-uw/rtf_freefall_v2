@@ -12,16 +12,15 @@ data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
 dirlist <- dirlist[-grep('03', dirlist)]
 wks <- seq_along(dirlist)
 
-PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_09_Sep_2020_1716420200909-18916-180jrta.csv'
-PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/provisioning_csv_14_Sep_2020_1719820200914-5303-al9flx.csv'
+PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/users.csv'
+PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_agg.csv'
 
 
 
 # notes -------------------------------------------------------------------
 
-# basically on day 1 we have resident, class, honors, and special program code
-# so let's assume we can use transcript to calculate _all_ of the above for whoever we need
-# then to predict t_n we'll use t_n-1 b/c when a new quarter begins we won't have current data
+# student record can be source for _new_ data but since it's continuously updated it shouldn't be used
+# for anything involving historical models, training data
 
 # fetch calendar weeks ----------------------------------------------------
 # DSN setup
@@ -53,7 +52,7 @@ mrg_assgn <- function(dir, wk){
 
   anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
   atypes <- c('nnnTncn')
-  navals = c('NA', 'None', 'none', 'NULL')
+  navals <- c('NA', 'None', 'none', 'NULL')
   afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
 
   A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
@@ -81,6 +80,8 @@ mrg_assgn <- function(dir, wk){
               wk_pts_poss = sum(pts_possible)) %>%
     ungroup()
 
+  rm(A)
+
   res <- full_join(stu, crs) %>%
     mutate(score = if_else(score < 0, 0, score)) %>%
     replace_na(list(n_assign = 0,
@@ -94,7 +95,7 @@ mrg_partic <- function(dir, wk) {
               'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
               'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
   ptypes <- c('nnnnnnnnnnn')
-  navals = c('NA', 'None', 'none', 'NULL')
+  navals <- c('NA', 'None', 'none', 'NULL')
   pfiles <- list.files(dir, pattern = '^partic-', full.names = T)
 
   P <- lapply(pfiles, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
@@ -534,7 +535,7 @@ fetch_trans <- function(){
 # lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
 # and pass the value to the merge fun from above.
 # Then we can merge, cleanup, aggregate, etc.
-a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]]))
+a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]]))   # I have no idea why this behaves differently and tends to crash my desktop but runs in seconds on laptop...
 # we could probably avoid the dirlist entirely with map() or mapply()
 p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
 a_all <- bind_rows(a_all)
