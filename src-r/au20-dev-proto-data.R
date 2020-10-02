@@ -29,7 +29,7 @@ PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_agg.cs
 fetch_cal_wks <- function(){
   con <- dbConnect(odbc(), 'sqlserver01')
   res <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-    filter(AcademicYrQtrCode == 20202) %>%
+    filter(AcademicYrQtrCode >= 20202) %>%
     select(AcademicYrQtrCode,
            AcademicQtrWeekNum,
            CalendarDate,
@@ -48,63 +48,76 @@ fetch_cal_wks <- function(){
 # TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
 
 mrg_assgn <- function(dir, wk){
-  cal_wks <- fetch_cal_wks()
 
-  anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
-  atypes <- c('nnnTncn')
-  navals <- c('NA', 'None', 'none', 'NULL')
+  print(paste0('dir: ', dir))
   afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
+  if(length(afiles) == 0) {print('no files')} else {
 
-  A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
-  A <- bind_rows(A)
-  A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-    mutate(week = wk,
-           due_date = lubridate::floor_date(due_at, unit = "day")) %>%
-    replace_na(list(pts_possible = 0, score = 0))
+    cal_wks <- fetch_cal_wks()
 
-  # >> diverge here to make two diff streams for student and course before re-combining them <<
-  ## STUDENT
-  stu <- A %>%
-    group_by(canvas_user_id, canvas_course_id, week) %>%
-    summarize(score = sum(score)) %>%
-    ungroup()
 
-  ## COURSE
-  crs <- A %>%
-    inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
-                               'week' = 'AcademicQtrWeekNum')) %>%
-    select(week, canvas_course_id, assgn_id, pts_possible) %>%
-    distinct() %>%
-    group_by(canvas_course_id, week) %>%
-    summarize(n_assign = n_distinct(assgn_id),
-              wk_pts_poss = sum(pts_possible)) %>%
-    ungroup()
+    anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
+    atypes <- c('nnnTncn')
+    navals <- c('NA', 'None', 'none', 'NULL')
 
-  rm(A)
+    A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
+    A <- bind_rows(A)
+    A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
+      mutate(week = wk,
+             due_date = lubridate::floor_date(due_at, unit = "day")) %>%
+      replace_na(list(pts_possible = 0, score = 0))
+    print('merging folder ok...')
 
-  res <- full_join(stu, crs) %>%
-    mutate(score = if_else(score < 0, 0, score)) %>%
-    replace_na(list(n_assign = 0,
-                    wk_pts_poss = 0))
-  return(res)
+    # >> diverge here to make two diff streams for student and course before re-combining them <<
+    ## STUDENT
+    stu <- A %>%
+      group_by(canvas_user_id, canvas_course_id, week) %>%
+      summarize(score = sum(score)) %>%
+      ungroup()
+    print('stu summarize ok...')
+
+    ## COURSE
+    crs <- A %>%
+      inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
+                                 'week' = 'AcademicQtrWeekNum')) %>%
+      select(week, canvas_course_id, assgn_id, pts_possible) %>%
+      distinct() %>%
+      group_by(canvas_course_id, week) %>%
+      summarize(n_assign = n_distinct(assgn_id),
+                wk_pts_poss = sum(pts_possible)) %>%
+      ungroup()
+    print('course summarize ok...')
+
+    rm(A)
+    print('removed giant A file...')
+
+    res <- full_join(stu, crs) %>%
+      mutate(score = if_else(score < 0, 0, score)) %>%
+      replace_na(list(n_assign = 0,
+                      wk_pts_poss = 0))
+    return(res)
+  }
 }
 
-
 mrg_partic <- function(dir, wk) {
-  pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
-              'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
-              'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
-  ptypes <- c('nnnnnnnnnnn')
-  navals <- c('NA', 'None', 'none', 'NULL')
+  print(paste0('dir: ', dir))
   pfiles <- list.files(dir, pattern = '^partic-', full.names = T)
+  if(length(pfiles) == 0) {print('no files')} else {
 
-  P <- lapply(pfiles, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
-  P <- bind_rows(P)
-  P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T) %>%
-    drop_na(canvas_user_id) %>%
-    mutate(week = wk)
+    pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
+                'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
+                'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
+    ptypes <- c('nnnnnnnnnnn')
+    navals <- c('NA', 'None', 'none', 'NULL')
 
-  return(P)
+    P <- lapply(pfiles, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
+    P <- bind_rows(P)
+    P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T) %>%
+      drop_na(canvas_user_id) %>%
+      mutate(week = wk)
+
+    return(P)
+  }
 }
 
 # Fetch funs for data from SDB ----------------------------------------
@@ -143,7 +156,7 @@ fetch_reg_data <- function(){
            yrq,
            # resident,
            # eop,
-           # special_program,
+           special_program,
            regis_ncr,
            regis_class,
            # pc = pending_class,   # TODO - check on which to use - i think pmax of reg_class and transcript class, pending is T/F
@@ -172,15 +185,15 @@ fetch_reg_data <- function(){
            spcl_program,     # use this, NOT registration
            class,
            resident,
-           num_holds,
-           ncr_code,
-           spp_qtrs_used,
-           tot_grade_points,
-           tot_graded_attmp,
-           tot_nongrd_earn,
-           tot_deductible,
-           tot_lowd_transfer,
-           tot_upd_transfer) %>%
+           # num_holds,
+           ncr_code) %>%
+           # spp_qtrs_used,
+           # tot_grade_points,
+           # tot_graded_attmp,
+           # tot_nongrd_earn,
+           # tot_deductible,
+           # tot_lowd_transfer,
+           # tot_upd_transfer) %>%
     left_join(
       tbl(con, in_schema('sec', 'student_1_college_major')) %>%
         filter(index1 == 1) %>%
@@ -195,7 +208,7 @@ fetch_reg_data <- function(){
     mutate(eop = if_else(spcl_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33) | special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0),
            class = pmax(regis_class, class, projected_class, na.rm = T),
            credits = pmax(tenth_day_credits, current_credits),
-           new_student = if_else(regis_ncr == 1 | ncr_code == 1, 1, 0),
+           # new_student = if_else(regis_ncr == 1 | ncr_code == 1, 1, 0),
            major_abbr = if_else(is.na(regis_major_abbr), s1_maj, regis_major_abbr),
            resident = if_else(resident %in% c(1, 2), 1, 0)) %>%
     mutate_if(is.character, trimws) %>%
@@ -224,14 +237,13 @@ fetch_reg_data <- function(){
     select(system_key,
            yrq,
            nonstd_grading,
-           honor_course,
-           major_disallowed,
+           # honor_course,
+           # major_disallowed,
            #course,
            crs_curric_abbr,
            crs_number,
            crs_section_id,
-           rep_course,
-           crs_fee_amt) %>%
+           rep_course) %>%
     # join w/ major to calc course == major_abbr
     left_join(regmaj) %>%
     left_join( tbl(con, in_schema('sec', 'student_1_college_major')) %>%
@@ -254,17 +266,17 @@ fetch_reg_data <- function(){
     group_by(system_key, yrq) %>%
     summarize(num_courses = n(),
               n_nstd_grd = sum(nonstd_grading),
-              n_honors = sum(honor_course),
-              n_major_disallowed = sum(major_disallowed),
-              n_repeat = sum(rep_course),
-              tot_fees = sum(crs_fee_amt),
-              n_mjr_crs = sum(same_crs_maj, na.rm = T),
-              n_stem_crs = sum(stem_course, na.rm = T)) %>%
+              # n_honors = sum(honor_course),
+              # n_major_disallowed = sum(major_disallowed),
+              n_repeat_course = sum(rep_course),
+              # tot_fees = sum(crs_fee_amt),
+              n_major_course = sum(same_crs_maj, na.rm = T),
+              n_stem_course = sum(stem_course, na.rm = T)) %>%
     ungroup()
 
   reg_data <- reg_data %>%
     left_join(regcr) %>%
-    mutate_at(vars(resident:n_stem_crs, -major_abbr), replace_na, 0) %>%
+    mutate_at(vars(resident:n_stem_course, -major_abbr), replace_na, 0) %>%
     mutate(ft = if_else(credits >= 12, 1, 0),
            ft_creds_over = credits - 12,
            premajor = if_else(grepl("PRE|EPRMJ", major_abbr) == T, 1, 0))
@@ -294,9 +306,11 @@ fetch_trans <- function(){
 
   con <- dbConnect(odbc(), 'sqlserver01')
 
-  filter_table <- copy_to(con,
-                          df = dat %>% select(system_key) %>% distinct(),
-                          overwrite = T)
+  ##
+  # As-of 09/30 copy_to/dbWriteTable no longer work passing data to SDB for some reason
+  ##
+  filter_table <- dat %>% select(system_key) %>% distinct()
+  # filter_table <- dat %>% select(system_key) %>% distinct() %>% copy_to(con, overwrite = T)
 
   mjr <- tbl(con, in_schema('sec', 'transcript_tran_col_major')) %>%
     filter(tran_yr >= 2015,       # arbitrary, should yield sufficient data for students based on starting point
@@ -311,9 +325,10 @@ fetch_trans <- function(){
                qtr_grade_points == 0 &
                qtr_graded_attmp == 0 &
                qtr_nongrd_earned == 0 &
-               qtr_deductible == 0)) %>% # ,
-    # class <= 4) %>%
-    semi_join(filter_table) %>%
+               qtr_deductible == 0)) %>%
+    ##
+    # semi_join(filter_table, copy = T) %>%
+    ##
     left_join(mjr) %>%
     select(system_key,
            yrq,
@@ -336,6 +351,9 @@ fetch_trans <- function(){
            tran_major_abbr) %>%
     mutate(resident = if_else(resident %in% c(1, 2), 1, 0)) %>%
     collect() %>%
+    ##
+    semi_join(filter_table) %>%
+    ##
     mutate_if(is.character, trimws) %>%
     mutate_if(is_logical, as.numeric) %>%
     mutate(resident = if_else(resident %in% c(1, 2), 1, 0),
@@ -376,7 +394,9 @@ fetch_trans <- function(){
   tran_crs <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
     mutate(yrq = tran_yr * 10 + tran_qtr) %>%
     filter(yrq >= 20154) %>%
-    semi_join(filter_table) %>%
+    ##
+    # semi_join(filter_table) %>%
+    ##
     left_join(stem_courses) %>%
     left_join(mjr) %>%
     select(system_key,
@@ -398,6 +418,9 @@ fetch_trans <- function(){
            tran_major_abbr) %>%
     distinct() %>%
     collect() %>%
+    ##
+    semi_join(filter_table) %>%
+    ##
     mutate_if(is.character, trimws) %>%
     mutate_if(is_logical, as.numeric) %>%
     replace_na(list(stem_course = 0)) %>%
@@ -505,7 +528,10 @@ fetch_trans <- function(){
   # NAN/NA aren't the same but this simplifies understanding later when trying to use the data b/c NAN values
   # create problems with funs or reading data into python which may not be obvious
   tran <- data.frame(lapply(tran, function(x) replace(x, is.nan(x), NA)))
+
   train_target <- tran_crs %>%
+    # TODO fix hard coding here
+    filter(yrq == 20202) %>%
     mutate(target = case_when(
       grade == '' ~ 1,
       nonpass_grade == 1 ~ 1,
@@ -641,29 +667,41 @@ trans_training_data <- tran$tran %>%
 
 out_dat <- dat %>%
   left_join(trans_training_data) %>%
-  left_join(tran$train_target %>% distinct(system_key, yrq, course, .keep_all = T))
+  left_join(tran$train_target %>% distinct(system_key, yrq, course, .keep_all = T)) %>%
+  # bug(?) fix
+  group_by(system_key, yrq) %>%
+  mutate(num_courses = n_distinct(short_name)) %>%
+  ungroup()
+# out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
+
 
 # TODO aggregate out_dat to make a model for overall outcome as before, not class-level -- then fetch registration class data so that we can do both models
 # # only keep final result (for sourcing file)
 # rm(ls()[which(ls() != 'dat')])
 
 
-TEST <- dat %>% filter(week == 1) %>%
-  group_by(system_key) %>%
-  summarize(across(c(score, n_assign, wk_pts_poss, page_views, page_views_level, partic, partic_level), mean),
-            across(starts_with('tot_'), sum))
-test_target <- tran$train_target %>%
-  filter(yrq == 20202) %>%
-  group_by(system_key) %>%
-  summarize(across(c(target), max),
-            across(c(std_grading, stem_course, writing, repeat_course, major_course), sum, .names = 'n_{.col}')) %>%
-# aligning names with reg_data
-  rename()
+time_invariant <- out_dat %>%
+  distinct(system_key, yrq, week, eop, resident, class, credits, num_courses, premajor, ft, ft_creds_over, cum_gpa)
 
+needs_aggregation <- out_dat %>%
+  filter(week <= 4) %>%
+  group_by(system_key, week) %>%
+  # n_assign is n_distinct for a course in a week
+  summarize(across(c(score, n_assign, wk_pts_poss, page_views, page_views_level, partic, partic_level),
+                   .fns = list(tot = ~sum(.x, na.rm = T), mean = ~mean(.x, na.rm = T)),
+                   .names = '{.fn}_{.col}'),
+            across(starts_with('tot_'), sum),
+            across(c(std_grading, stem_course, repeat_course, major_course, target), ~sum(.x, na.rm = T), .names = 'n_{.col}')) %>%
+  ungroup()
 
+aggr_training_data <- time_invariant %>%
+  inner_join(needs_aggregation) %>%
+  mutate(target = if_else(n_target > 0, 1, 0),
+         n_nstd_grd = num_courses - n_std_grading) %>%
+  select(-n_std_grading)
 
+aggr_training_data %>% select(-n_target) %>% write_csv('data-prepped/ffv2-scratch-py-aggregated-data.csv')
 
-# out_dat %>% filter(week <= 5) %>% write_csv('data-prepped/ffv2-scratch-py-data.csv')
 
 
 # NEW prediction data -----------------------------------------------------
@@ -671,21 +709,32 @@ test_target <- tran$train_target %>%
 # we won't have numeric_grade or target of course but also, if we're going to do it by course we need
 # std_grading, stem_course, writing, repeat_course, major_course
 new_pred_data <- reg_data %>%
-  select(system_key,
-         yrq,
-         # uw_netid,
-         class,
-         resident,
-         eop,
-         credits,
-         num_courses,
-         ft,
-         ft_creds_over,
-         premajor) %>%
-  left_join( tran$tran %>%
-               filter(yrq == 20202) %>%
-               select(system_key, n_qtrs, !!!lagvars),
-             by = c('system_key' = 'system_key'))
+  select(-major_abbr, -uw_netid) %>%
+  left_join( tran %>% select(system_key, yrq))
+  # left_join( tran$tran %>%
+  #              filter(yrq == 20202) %>%
+  #              select(system_key, n_qtrs, !!!lagvars),
+  #            by = c('system_key' = 'system_key'))
 
-setdiff(names(new_pred_data), names(out_dat))
-setdiff(names(out_dat), names(new_pred_data))
+setdiff(names(new_pred_data), names(aggr_training_data))
+setdiff(names(aggr_training_data), names(new_pred_data))
+
+au20path <- '../../Retention-Analytics-Dashboard/data-raw/au20'
+(au20dirlist <- dir(au20path, pattern = '^week-', all.files = T, full.names = T))
+au20wks <- seq_along(au20dirlist)
+au20_assgn <- lapply(seq_along(au20dirlist), function(i) mrg_assgn(au20dirlist[[i]], au20wks[i]))
+au20_part <- lapply(seq_along(au20dirlist), function(i) mrg_partic(au20dirlist[[i]], au20wks[i]))
+au20_a <- bind_rows(au20_assgn[unlist(lapply(au20_assgn, is.data.frame))])
+au20_p <- bind_rows(au20_part[unlist(lapply(au20_part, is.data.frame))])
+au20_data <- full_join(au20_a, au20_p)
+# now do that same calc/aggregation for this
+au20_data <- au20_data %>%
+  filter(week <= 4) %>%
+  group_by(canvas_user_id, week) %>%
+  # n_assign is n_distinct for a course in a week
+  summarize(across(c(score, n_assign, wk_pts_poss, page_views, page_views_level, partic, partic_level),
+                   .fns = list(tot = ~sum(.x, na.rm = T), mean = ~mean(.x, na.rm = T)),
+                   .names = '{.fn}_{.col}'),
+            across(starts_with('tot_'), ~sum(.x, na.rm = T))) %>%
+  ungroup()
+# TODO augment with system key so I can combine
