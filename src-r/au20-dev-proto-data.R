@@ -6,17 +6,22 @@ library(dbplyr)
 
 setwd(rstudioapi::getActiveProject())
 
-data_path <- '../../Retention-Analytics-Dashboard/data-raw/au20/'
+# data_path <- '../../Retention-Analytics-Dashboard/data-raw/au20/'
+data_path <- '../../Retention-Analytics-Dashboard/data-raw/su20/Archive/'
 (dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
-dirlist <- dirlist[-grep('-00', dirlist)]
+# only for for spr20
+# dirlist <- dirlist[-3]
+(dirlist <- dirlist[-grepl('-00', dirlist) == F])
+
 # check n_files
 sapply(dirlist, function(x) length(list.files(x, pattern = "assgn|partic")))
-(dirlist <- dirlist[sapply(dirlist, function(x) length(list.files(x))) >= 2])
+(dirlist <- dirlist[sapply(dirlist, function(x) length(list.files(x, pattern = "assgn|partic"))) >= 2])
 
 wks <- seq_along(dirlist)
 
+# >>spr 20<<
 PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/users.csv'
-PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_agg.csv'
+PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_su20.csv'
 
 # notes -------------------------------------------------------------------
 
@@ -580,7 +585,7 @@ prov_crss <- read_csv(PROV_CRS_PATH, col_types = 'dc-cc--ncc----l') %>% filter(c
 create_dat_from_canvas <- function(){
   # read provisioning; these currently need periodic updates
 
-  dat <- full_join(a_all, p_all)
+  dat <- p_all %>% inner_join(a_all)
   dat <- dat %>% inner_join(prov_crss) %>% inner_join(prov_usrs)
 
   # link student records:
