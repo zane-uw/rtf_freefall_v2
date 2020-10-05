@@ -6,16 +6,17 @@ library(dbplyr)
 
 setwd(rstudioapi::getActiveProject())
 
-data_path <- '../../Retention-Analytics-Dashboard/data-raw/spr20/'
+data_path <- '../../Retention-Analytics-Dashboard/data-raw/au20/'
 (dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
-# spring20 is empty for week03 b/c data collection started in week02
-dirlist <- dirlist[-grep('03', dirlist)]
+dirlist <- dirlist[-grep('-00', dirlist)]
+# check n_files
+sapply(dirlist, function(x) length(list.files(x, pattern = "assgn|partic")))
+(dirlist <- dirlist[sapply(dirlist, function(x) length(list.files(x))) >= 2])
+
 wks <- seq_along(dirlist)
 
 PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/users.csv'
 PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_agg.csv'
-
-
 
 # notes -------------------------------------------------------------------
 
