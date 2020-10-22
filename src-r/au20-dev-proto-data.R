@@ -1,27 +1,30 @@
 # Try building model based on spring 20 data gathered for RAD
 
+rm(list = ls())
+
 library(tidyverse)
 library(odbc)
 library(dbplyr)
 
 setwd(rstudioapi::getActiveProject())
 
-# data_path <- '../../Retention-Analytics-Dashboard/data-raw/au20/'
-data_path <- '../../Retention-Analytics-Dashboard/data-raw/su20/Archive/'
-(dirlist <- dir(data_path, pattern = '^week-', all.files = T, full.names = T))
-# only for for spr20
-# dirlist <- dirlist[-3]
-(dirlist <- dirlist[-grepl('-00', dirlist) == F])
+# Import canvas data for merging
+# au20 <- read_csv('data-intermediate/canvas-au20.csv')
+# sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
+# su20 <- read_csv('data-intermediate/canvas-su20.csv')
 
-# check n_files
-sapply(dirlist, function(x) length(list.files(x, pattern = "assgn|partic")))
-(dirlist <- dirlist[sapply(dirlist, function(x) length(list.files(x, pattern = "assgn|partic"))) >= 2])
-
-wks <- seq_along(dirlist)
-
-# >>spr 20<<
-PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/users.csv'
-PROV_CRS_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/courses_su20.csv'
+# combine intermediate into `dat`
+mrg_canvas <- function(){
+  files <- list.files('data-intermediate/', pattern = "canvas-[a-z]{2}[0-9]{2}.csv", full.names = T)
+  dat <- data.frame()
+  for(i in 1:length(files)){
+    x <- read_csv(files[i])
+    x <- x %>% select(-starts_with('canvas'), -long_name, -section) %>% distinct()
+    dat <- bind_rows(dat, x)
+  }
+  return(dat)
+}
+dat <- mrg_canvas()
 
 # notes -------------------------------------------------------------------
 
@@ -46,86 +49,6 @@ fetch_cal_wks <- function(){
   return(res)
 }
 
-# FUN to build assignment and participation data from raw api result files -----------------------------------------------------
-# list directories:
-#   for each directory:
-# combine the grades and assignments; adding the week #
-
-# TODO: Will need expansion of assignment data to create 'full' dataset (only do this once, not weekly, or accomplish it through merging with partic)
-
-mrg_assgn <- function(dir, wk){
-
-  print(paste0('dir: ', dir))
-  afiles <- list.files(dir, pattern = '^assgn-', full.names = T)
-  if(length(afiles) == 0) {print('no files')} else {
-
-    cal_wks <- fetch_cal_wks()
-
-
-    anames <- c('canvas_course_id', 'canvas_user_id', 'assgn_id', 'due_at', 'pts_possible', 'assgn_status', 'score')
-    atypes <- c('nnnTncn')
-    navals <- c('NA', 'None', 'none', 'NULL')
-
-    A <- lapply(afiles, read_delim, delim = '|', col_types = atypes, col_names = anames, na = navals)
-    A <- bind_rows(A)
-    A <- A %>% distinct(canvas_course_id, canvas_user_id, assgn_id, .keep_all = T) %>%
-      mutate(week = wk,
-             due_date = lubridate::floor_date(due_at, unit = "day")) %>%
-      replace_na(list(pts_possible = 0, score = 0))
-    print('merging folder ok...')
-
-    # >> diverge here to make two diff streams for student and course before re-combining them <<
-    ## STUDENT
-    stu <- A %>%
-      group_by(canvas_user_id, canvas_course_id, week) %>%
-      summarize(score = sum(score)) %>%
-      ungroup()
-    print('stu summarize ok...')
-
-    ## COURSE
-    crs <- A %>%
-      inner_join(cal_wks, by = c('due_date' = 'CalendarDate',
-                                 'week' = 'AcademicQtrWeekNum')) %>%
-      select(week, canvas_course_id, assgn_id, pts_possible) %>%
-      distinct() %>%
-      group_by(canvas_course_id, week) %>%
-      summarize(n_assign = n_distinct(assgn_id),
-                wk_pts_poss = sum(pts_possible)) %>%
-      ungroup()
-    print('course summarize ok...')
-
-    rm(A)
-    print('removed giant A file...')
-
-    res <- full_join(stu, crs) %>%
-      mutate(score = if_else(score < 0, 0, score)) %>%
-      replace_na(list(n_assign = 0,
-                      wk_pts_poss = 0))
-    return(res)
-  }
-}
-
-mrg_partic <- function(dir, wk) {
-  print(paste0('dir: ', dir))
-  pfiles <- list.files(dir, pattern = '^partic-', full.names = T)
-  if(length(pfiles) == 0) {print('no files')} else {
-
-    pnames <- c('canvas_course_id', 'canvas_user_id', 'page_views', 'page_views_level',
-                'partic', 'partic_level', 'tot_assgns', 'tot_assgns_on_time',
-                'tot_assgn_late', 'tot_assgn_missing', 'tot_assgn_floating')
-    ptypes <- c('nnnnnnnnnnn')
-    navals <- c('NA', 'None', 'none', 'NULL')
-
-    P <- lapply(pfiles, read_delim, delim = '|', col_types = ptypes, col_names = pnames, na = navals)
-    P <- bind_rows(P)
-    P <- P %>% distinct(canvas_course_id, canvas_user_id, .keep_all = T) %>%
-      drop_na(canvas_user_id) %>%
-      mutate(week = wk)
-
-    return(P)
-  }
-}
-
 # Fetch funs for data from SDB ----------------------------------------
 
 # need these keys from EDW
@@ -140,14 +63,7 @@ get_edw_keys <- function(){
   return(skeys)
 }
 
-
 # registration query ---------------------------------------------
-
-
-# TODO develop pull of reg data for end-yrq, transcript should ONLY be things we would observe for a quarter that isn't finished yet
-# In a hurry so cutting it to the actual quarter we need for this right now
-# TODO TECHNICAL DEBT
-
 fetch_reg_data <- function(){
   con <- dbConnect(odbc(), 'sqlserver01')
 
@@ -560,59 +476,8 @@ fetch_trans <- function(){
 }
 
 
-# aggregate assignment/partic files ---------------------------------------
-
-
-# 'loop' assignments the r-ish way, in a surprising reversal of lapply syntax
-# lapply 'applies' to the `seq_along` ie make the argument to lapply the index itself, as in a for-loop,
-# and pass the value to the merge fun from above.
-# Then we can merge, cleanup, aggregate, etc.
-a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], wks[[i]]))   # I have no idea why this behaves differently and tends to crash my desktop but runs in seconds on laptop...
-# we could probably avoid the dirlist entirely with map() or mapply()
-p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], wks[i]))
-a_all <- bind_rows(a_all)
-p_all <- bind_rows(p_all)
-
-# Import canvas provisioning -------------------------------------------
-
-# These need periodic updates
-prov_usrs <- read_csv(PROV_USR_PATH, col_types = 'nc--c------cc') %>% filter(status == 'active', created_by_sis == 'true') %>% select(-status, -created_by_sis)
-prov_crss <- read_csv(PROV_CRS_PATH, col_types = 'dc-cc--ncc----l') %>% filter(created_by_sis == T, status == 'active') %>% select(-status, -created_by_sis)
-
-# full join assignments and participation, leave NA's
-# combine provisioning with dat
-
-create_dat_from_canvas <- function(){
-  # read provisioning; these currently need periodic updates
-
-  dat <- p_all %>% inner_join(a_all)
-  dat <- dat %>% inner_join(prov_crss) %>% inner_join(prov_usrs)
-
-  # link student records:
-  # 1) edw <-> merged data on netid = login
-  dat <- dat %>% inner_join(get_edw_keys(), by = c('login_id' = 'uw_netid'))
-
-  # link courses:
-  # 1) turn dat/prov into dept + ### with yrq
-  xmat <- data.frame(str_split(dat$course_id, '-', simplify = T))
-  xmat$qtr <- match(xmat$X2, table = c('winter', 'spring', 'summer', 'autumn'))
-  # ymat <- data.frame(str_split(x$course_id, '-', simplify = T))
-  dat$dept_abbrev <- xmat$X3
-  dat$course <- paste(xmat$X3, xmat$X4, sep = "_")
-  dat$yrq <- as.numeric(paste0(xmat$X1, xmat$qtr))
-  dat$section <- xmat$X5
-
-  return(dat)
-
-}
-
-
-
-
 # >> run data and transcript funs << --------------------------------------------
 
-dat <- create_dat_from_canvas()
-dat <- dat %>% select(system_key, yrq, course, short_name, week:tot_assgn_floating) %>% distinct()
 tran <- fetch_trans()             # reminder - this is a named list
 # TODO see above re: this data
 # reg_data for _new_ preds needs to have names standardized with transcript file fields
