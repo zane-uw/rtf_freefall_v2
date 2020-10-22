@@ -664,7 +664,8 @@ trans_training_data <- tran$tran %>%
          premajor,
          ft,
          ft_creds_over,
-         !!!lagvars) %>%     # note: need to unquote list created by `vars` w/in select here but see below
+         !!!lagvars) %>%     # note: need to unquo
+  te list created by `vars` w/in select here but see below
   group_by(system_key) %>%
   arrange(system_key, yrq) %>%
   mutate_at(lagvars, lag)   # however, mutate_at isn't bothered by the expression created by vars. This is all consistent if somewhat opaque and confusing
