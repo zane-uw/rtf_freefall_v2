@@ -8,11 +8,6 @@ library(dbplyr)
 
 setwd(rstudioapi::getActiveProject())
 
-# Import canvas data for merging
-# au20 <- read_csv('data-intermediate/canvas-au20.csv')
-# sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
-# su20 <- read_csv('data-intermediate/canvas-su20.csv')
-
 # combine intermediate into `dat`
 mrg_canvas <- function(){
   files <- list.files('data-intermediate/', pattern = "canvas-[a-z]{2}[0-9]{2}.csv", full.names = T)

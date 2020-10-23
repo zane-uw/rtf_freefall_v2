@@ -148,6 +148,7 @@ compass.weekly <- full_join(adv.wk, ic.wk) %>%
 
 rm(con, adv.wk, ic.wk, n, adv.agg, ic.activity.agg, hs, ic, adv, dat, cal, sid, appt)
 
+
 # **SDB DATA** ----------------------------------------------------------------
 
 # !kinit
