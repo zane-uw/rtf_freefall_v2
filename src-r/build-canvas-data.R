@@ -9,7 +9,7 @@ library(dbplyr)
 setwd(rstudioapi::getActiveProject())
 
 # Set/update term:
-TERM <- 'sp20'
+TERM <- 'au20'
 
 # Canvas helper functions -------------------------------------------------
 # req'd to connect id keys

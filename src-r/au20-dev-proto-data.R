@@ -44,7 +44,7 @@ fetch_cal_wks <- function(){
   return(res)
 }
 
-# Fetch funs for data from SDB ----------------------------------------
+# Helper CTEs for data from SDB ----------------------------------------
 
 # need these keys from EDW
 get_edw_keys <- function(){
@@ -59,6 +59,7 @@ get_edw_keys <- function(){
 }
 
 # registration query ---------------------------------------------
+# Registration data is what we need for new predictions in the future
 fetch_reg_data <- function(){
   con <- dbConnect(odbc(), 'sqlserver01')
 
@@ -185,15 +186,15 @@ fetch_reg_data <- function(){
               n_nstd_grd = sum(nonstd_grading),
               # n_honors = sum(honor_course),
               # n_major_disallowed = sum(major_disallowed),
-              n_repeat_course = sum(rep_course),
+              n_repeat_crs = sum(rep_course),
               # tot_fees = sum(crs_fee_amt),
-              n_major_course = sum(same_crs_maj, na.rm = T),
-              n_stem_course = sum(stem_course, na.rm = T)) %>%
+              n_mjr_crs = sum(same_crs_maj, na.rm = T),
+              n_stem_crs = sum(stem_course, na.rm = T)) %>%
     ungroup()
 
   reg_data <- reg_data %>%
     left_join(regcr) %>%
-    mutate_at(vars(resident:n_stem_course, -major_abbr), replace_na, 0) %>%
+    mutate_at(vars(resident:n_stem_crs, -major_abbr), replace_na, 0) %>%
     mutate(ft = if_else(credits >= 12, 1, 0),
            ft_creds_over = credits - 12,
            premajor = if_else(grepl("PRE|EPRMJ", major_abbr) == T, 1, 0))
@@ -279,7 +280,7 @@ fetch_trans <- function(){
            ft = if_else(qtr_graded_attmp + qtr_nongrd_earned >= 12 | tenth_day_credits >= 12, 1, 0),
            ft_creds_over = pmax(tenth_day_credits, (qtr_graded_attmp + qtr_nongrd_earned)) - 12,
            eop = if_else(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33), 1, 0)) %>%
-    # windowed transformationst
+    # windowed transformations
     group_by(system_key) %>%
     arrange(system_key, yrq) %>%
     mutate(n_qtrs = row_number(yrq),
@@ -375,7 +376,7 @@ fetch_trans <- function(){
               n_mjr_crs = sum(major_course, na.rm = T),
               n_mjr_disallowed = sum(major_disallowed, na.rm = T),
               n_writing = sum(writing, na.rm = T),
-              n_repeat = sum(repeat_course, na.rm = T)) %>%
+              n_repeat_crs = sum(repeat_course, na.rm = T)) %>%
     group_by(system_key) %>%
     arrange(system_key, yrq) %>%
     # Q: keep n_ or just csum?
@@ -384,10 +385,10 @@ fetch_trans <- function(){
            csum_mjr_crs = cumsum(n_mjr_crs),
            csum_mjr_disallowed = cumsum(n_mjr_disallowed),
            csum_writing = cumsum(n_writing),
-           csum_repeat = cumsum(n_repeat)) %>%
+           csum_repeat = cumsum(n_repeat_crs)) %>%
     ungroup()
 
-  # TODO LEFT OFF HERE
+  # TODO
   # STEM, PREMAJ, MAJ gpa, credit calculations
   stem <- tran_crs %>%
     filter(stem_course == 1,
@@ -448,7 +449,7 @@ fetch_trans <- function(){
 
   train_target <- tran_crs %>%
     # TODO fix hard coding here
-    filter(yrq == 20202) %>%
+    # filter(yrq == 20202) %>%
     mutate(target = case_when(
       grade == '' ~ 1,
       nonpass_grade == 1 ~ 1,
@@ -479,16 +480,30 @@ tran <- fetch_trans()             # reminder - this is a named list
 # class might be a problem b/c of pending updates that result in a lot of 0's
 reg_data <- fetch_reg_data()
 
+## TEST/CHECK
+x <- names(tran$tran)
+y <- names(reg_data)
+setdiff(y, x)
+
+# We need to normalize some  names for model training
+tran$tran <- tran$tran %>% rename(major_abbr = tran_major_abbr, credits = tenth_day_credits)
+reg_data <- reg_data %>% select(-n_nstd_grd, -uw_netid)
+
+## TEST/CHECK
+x <- names(tran$tran)
+y <- names(reg_data)
+setdiff(y, x)
+
 
 # Merging, FE w/ transcript data --------------------------------------------
 
-# transcript features (it's ok to have 20203+ so long as we're merging to the current file on yrq)
-# need to not include data that wouldn't be known, either by lagging before merging or by being careful about removing
+# need to exclude transcript information that wouldn't be known, either by lagging before merging or by being careful about removing
 # vars from queries
 
 
-# remember, we won't know cumulative information for the data we're trying to predict
-# - subset transcripts for final dataset
+
+
+
 
 # basically on day 1 we have resident, class, honors, and special program code (eop)
 # so let's assume we can use transcript to calculate _all_ of the above for whoever we need

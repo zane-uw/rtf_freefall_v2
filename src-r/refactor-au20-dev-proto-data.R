@@ -1,5 +1,4 @@
 rm(list = ls())
-gc()
 
 library(tidyverse)
 library(dbplyr)
@@ -10,144 +9,6 @@ setwd(rstudioapi::getActiveProject())
 # floor for historical data
 YRQ_0 <- 20154
 EOP_CODES <- c(1, 2, 13, 14, 16, 17, 31, 32, 33)
-
-# **COMPASS DATA** ------------------------------------------------------------
-# For reasons that are opaque to me compass-db doesn't work w/ kerberos auth like my other DB con
-# So we can't dispense w/ `config` completely
-con <- dbConnect(odbc::odbc(), "compass", timezone = Sys.timezone(),
-                 UID = config::get("sdb", file = "config.yml")$uid, PWD = keyring::key_get("sdb"))
-
-# Filter dates since we don't need so much historical data to use for training 20202/3/4
-# also convenient for making the data pull much faster
-appt <- tbl(con, 'appointment') %>%
-  # filter(year(Date) >= 2008) %>%
-  filter(Date >= "2020-01-01") %>%
-  select(ID,
-         student_no,
-         staff_id,
-         Contact_Type,
-         Date,
-         Time_In,
-         Time_Out,
-         .data$AddDropclass : .data$Notes,
-         Event_Type,
-         Source,
-         TimeDateIn,
-         TimeDateOut,
-         AutoLogOut) %>%
-  collect()
-
-dbDisconnect(con); rm(con)
-
-con <- dbConnect(odbc(), 'sqlserver01')
-cal <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
-  filter(CalendarYr >= 2020) %>%
-  select(CalendarDate, AcademicQtrKeyId, AcademicQtrDayNum, AcademicQtrWeekNum, AcademicQtrName, AcademicQtrCensusDayInd, AcademicYrName) %>%
-  collect() %>%
-  mutate(yr = as.numeric(AcademicQtrKeyId) %/% 10)
-
-sid <- tbl(con, in_schema('sec', 'student_1')) %>%
-  select(system_key, student_no) %>%
-  collect()
-
-dbDisconnect(con); rm(con)
-
-dat <- appt %>%
-  # mutate(Date = as.POSIXct(Date, tz = 'UTC')) %>%
-  mutate(t_in = paste(str_sub(Date, end = 10), str_sub(Time_In, end = 5), sep = ' '),
-         Date = as.POSIXct(Date, tz = 'UTC')) %>%
-  filter(str_length(t_in) == 16) %>%
-  inner_join(cal, by = c('Date' = 'CalendarDate')) %>%
-  mutate(AcademicQtrKeyId = as.numeric(AcademicQtrKeyId),
-         qtr.num = AcademicQtrKeyId %% 10,
-         qtr.label = factor(qtr.num, labels = c('Winter', 'Spring', 'Summer', 'Autumn')), # levels = c('Winter', 'Spring', 'Summer', 'Autumn')),
-         t_in = strftime(t_in, format = '%Y-%m-%d %H:%M', tz = 'UTC'))
-
-# dat$staff_id[is.na(dat$staff_id)] <- 'None'
-dat <- dat %>%
-  mutate_at(vars(.data$AddDropclass : .data$Other), as.numeric) %>%
-  mutate(NoShow = as.numeric(if_else(NoShow == 'Y', 1, 0)))
-
-hs <- dat[dat$Source == 'HS',]
-# ic <- dat %>%
-#   filter(dat$Source %in% c('Arlyn', 'basement', 'Biology', 'chem', 'dev3', 'EpMac', 'FrontDesk', 'Lecture Room', 'mac', 'Math', 'test10' 'Writing Center'))
-ic <- dat[grep('^IC', dat$Contact_Type),]
-adv <- dat %>% filter(dat$Contact_Type %in% c('Appointment', 'Quick Question', 'Notes', 'Email Contact', 'Email', 'Telephone',
-                                              'Email Message', 'Workshop', 'General Question', 'Classroom Presentation', 'ECC Meeting or Event',
-                                              'Admin Notes'))
-# create weekly data
-adv.agg <- adv %>%
-  group_by(student_no, yr, qtr.num) %>%
-  summarize_at(vars(AddDropclass:NoShow), sum, na.rm = T) %>%
-  ungroup() %>%
-  mutate(visit_advising = 1)
-ic.activity.agg <- ic %>%
-  group_by(student_no, yr, qtr.num, Contact_Type) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  pivot_wider(., names_from = 'Contact_Type', values_from = 'n') # values_fill doesn't work
-ic.activity.agg[,4:ncol(ic.activity.agg)] <- apply(ic.activity.agg[,4:ncol(ic.activity.agg)], 2, function(x) replace_na(x, 0))
-
-str_clean <- function(x){
-  x <- str_remove_all(x, '[[:punct:]]')
-  # x <- tolower(x)
-  x <- str_replace_all(x, " ", "_")
-}
-
-n <- str_clean(names(ic.activity.agg[4:ncol(ic.activity.agg)]))
-# n <- str_remove_all(n, '[[:punct:]]')
-# n <- c(names(ic.activity.agg[1:3]), n)
-names(ic.activity.agg) <- c(names(ic.activity.agg[1:3]), n)
-ic.activity.agg$visit_ic <- 1
-
-# by weeks:
-# NA weeks will be 99? Probably they should be the next year/qtr and get a 0
-next.yrq <- function(x){
-  x <- x + ifelse(x %% 10 == 4, 7, 1)
-  return(x)
-}
-
-# [TODO] fix the yrq sequencing for the above data as well
-
-adv.wk <- adv %>%
-  replace_na(list(NoShow = 0)) %>%
-  filter(NoShow == 0) %>%
-  rename(yrq = AcademicQtrKeyId, week = AcademicQtrWeekNum)  %>%
-  group_by(student_no, yrq, week) %>%
-  summarize(visit_advising = n()) %>%
-  ungroup() %>%
-  mutate(week = replace_na(week, 0),
-         yrq = if_else(week == 0, next.yrq(yrq), yrq)) %>%
-  pivot_wider(., names_from = 'week', values_from = 'visit_advising', names_prefix = 'advising_week_')
-adv.wk[,3:ncol(adv.wk)] <- apply(adv.wk[,3:ncol(adv.wk)], 2, function(x) replace_na(x, 0))
-
-ic.wk <- ic %>%
-  rename(yrq = AcademicQtrKeyId, week = AcademicQtrWeekNum) %>%
-  group_by(student_no, yrq, week) %>%
-  summarize(visit_ic = n()) %>%
-  ungroup() %>%
-  mutate(week = replace_na(week, 0),
-         yrq = if_else(week == 0, next.yrq(yrq), yrq)) %>%
-  pivot_wider(., names_from = 'week', values_from = 'visit_ic', names_prefix = 'ic_week_')
-ic.wk[,3:ncol(ic.wk)] <- apply(ic.wk[,3:ncol(ic.wk)], 2, function(x) replace_na(x, 0))
-
-# add system_key and combine
-compass.feats <- full_join(adv.agg, ic.activity.agg) %>%
-  filter(student_no > 1) %>%
-  mutate(yrq = (yr*10)+qtr.num) %>%
-  select(-yr, -qtr.num) %>%
-  inner_join(sid) %>%
-  select(-student_no)
-compass.feats <- data.frame(apply(compass.feats, 2, replace_na, 0))
-
-compass.weekly <- full_join(adv.wk, ic.wk) %>%
-  filter(student_no > 1) %>%
-  inner_join(sid) %>%
-  select(-student_no) %>%
-  mutate_all(replace_na, 0)
-
-rm(con, adv.wk, ic.wk, n, adv.agg, ic.activity.agg, hs, ic, adv, dat, cal, sid, appt)
-
 
 # **SDB DATA** ----------------------------------------------------------------
 
@@ -174,8 +35,13 @@ db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
   full_join( tbl(con, in_schema('sec', 'registration')) %>%
                filter(special_program %in% EOP_CODES) %>%
                select(system_key)
-  ) %>%
+             ) %>%
+  full_join( tbl(con, in_schema('sec', 'student_1')) %>%
+               filter(spcl_program %in% EOP_CODES) %>%
+               select(system_key)
+             ) %>%
   distinct()
+
 
 
 # TRANSCRIPTS -------------------------------------------------------------
@@ -235,7 +101,7 @@ create.transcripts <- function(from_yrq = YRQ_0){
   # d1 <- currentq %>% select(gl_first_day) %>% collect()
 
   reg.courses <- reg.courses %>%
-    left_join( select(currentq, current_yr, current_qtr, gl_first_day ),
+    left_join( select(currentq, current_yr, current_qtr, gl_first_day),
                by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
     mutate(to.drop = if_else(request_status == 'D' & request_dt < gl_first_day, 1, 0)) %>%
     filter(to.drop == 0) %>%
@@ -356,10 +222,6 @@ get.courses.taken <- function(){
            honor_course,
            section_id = crs_section_id,
            course,
-           # numeric.grade
-           # course.withdraw
-           # course.nogpa
-           #
            course.alt.grading) %>%
     group_by(system_key, course) %>%
     arrange(system_key, course, section_id) %>%
@@ -371,8 +233,6 @@ get.courses.taken <- function(){
 
   return(result)
 }
-
-# courses.taken <- get.courses.taken()
 
 # DERIVED COURSES-TAKEN FIELDS ----------------------------------------------
 
@@ -644,6 +504,7 @@ create.stu1 <- function(){
     semi_join(db.eop, by = c('system_key' = 'system_key')) %>%
     select(system_key,
            s1_gender,
+           uw_netid,
            last_yr_enrolled,
            last_qtr_enrolled,
            admitted_for_yr,
@@ -767,7 +628,7 @@ create.application.data <- function(){
 
 create.unmet.requests <- function(){
   unmet.reqs <- tbl(con, in_schema('sec', 'sr_unmet_request')) %>%
-    filter(unmet_yr >= 2006) %>%
+    filter(unmet_yr >= 2019) %>%
     semi_join(db.eop, by = c("unmet_system_key" = "system_key")) %>%
     group_by(unmet_system_key, unmet_yr, unmet_qtr) %>%
     summarize(n.unmet = n()) %>%
@@ -784,7 +645,7 @@ create.unmet.requests <- function(){
 create.late.registrations <- function(){
 
   syscal <- tbl(con, in_schema("sec", "sys_tbl_39_calendar")) %>%
-    filter(first_day >= "2004-01-01") %>%                           # arbitrary, some kind of limit is helpful
+    filter(first_day >= "2020-01-01") %>%                           # arbitrary, some kind of limit is helpful
     select(table_key, first_day, tenth_day, last_day_add) %>%
     collect() %>%
     mutate(yrq = as.numeric(table_key),
@@ -795,7 +656,7 @@ create.late.registrations <- function(){
   regc <- tbl(con, in_schema("sec", "registration_courses")) %>%
     semi_join(db.eop) %>%
     mutate(yrq = regis_yr*10 + regis_qtr) %>%
-    filter(yrq >= YRQ_0) %>%
+    filter(yrq >= 20194) %>%
     select(system_key, yrq, add_dt_tuit) %>%
     group_by(system_key, yrq) %>%
     filter(add_dt_tuit == min(add_dt_tuit)) %>% distinct() %>%
@@ -842,7 +703,7 @@ transcript <- create.transcripts()
 courses.taken <- get.courses.taken()
 derived.courses.taken.data <- create.derived.courses.taken.tscs.data() %>% select(-starts_with('cumavg.dept'), -starts_with('nclass.dept'), -starts_with('csum.dept'))
 majors <- create.major.data()
-stu.age <- calc.adjusted.age() # need to fix this for extra current q
+stu.age <- calc.adjusted.age()
 appl.data <- create.application.data() %>% select(-c(appl_yr, appl_qtr, appl_no), -starts_with('best_'))
 unmet.reqs <- create.unmet.requests()
 late.reg <- create.late.registrations()
@@ -869,10 +730,9 @@ mrg.dat <- transcript %>%
   left_join(majors) %>% rename(major_abbr = tran_major_abbr) %>%  # may want to keep this
   left_join(stu.age) %>%
   left_join(unmet.reqs) %>%
-  left_join(compass.feats) %>%
-  left_join(compass.weekly)%>%
-  left_join(derived.courses.taken.data) %>%
-  replace_na(list('n.holds' = 0, 'n.unmet' = 0))
+  # left_join(compass.feats) %>%
+  # left_join(compass.weekly)%>%
+  left_join(derived.courses.taken.data)
 
 # derived features and corrections for 'fresh' data ----------------------------------
 
@@ -896,11 +756,6 @@ mrg.dat <- mrg.dat %>%
   mutate(qtr.seq = row_number()) %>%
   ungroup()
 
-# aggregate IC variables
-ic <- mrg.dat %>% select(starts_with('IC', ignore.case = F))
-mrg.dat$ic_tot <- rowSums(ic)
-rm(ic)
-mrg.dat <- mrg.dat %>% select(-starts_with('IC', ignore.case = F))
 
 # name check --------------------------------------------------------------
 #
@@ -915,4 +770,4 @@ mrg.dat <- mrg.dat %>% select(-starts_with('IC', ignore.case = F))
 # save(mrg.dat, file = paste0('OMAD_adverse_outcome_mod/data/merged-sdb-compass_', Sys.Date(), '.RData'))
 # save(courses.taken, file = 'OMAD_adverse_outcome_mod/data/Y-courses-taken.RData')
 
-write_csv(mrg.dat, 'data-intermediate/refac-au20-sdb-data.csv')
+write_csv(mrg.dat, 'data-intermediate/refac-au20-eop-sdb-data.csv')
