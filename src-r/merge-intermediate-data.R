@@ -54,7 +54,7 @@ sdb_dat <- sdb_dat %>%
   ungroup() %>%
   filter(yrq %in% unique(can_dat$yrq)) %>%
   select(-lvars)
-rm(lvars)
+# rm(lvars)
 
 
 # tidy up and add compass data ----------------------------------------------------
@@ -85,7 +85,10 @@ dat <- can_dat %>%
           yrq,
           week) %>%
   # left_join(compass.weekly) %>%
-  left_join(compass.weekly, by = c('system_key', 'yrq', 'week')) %>%
+  left_join(compass.weekly,
+            by = c('system_key' = 'system_key',
+                   'yrq' = 'yrq',
+                   'week' = 'week')) %>%
   janitor::clean_names() %>%
   select(-visit_ic) %>%
   replace_na(list(qgpa15 = 0,
