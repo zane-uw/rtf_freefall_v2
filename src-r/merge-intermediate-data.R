@@ -108,9 +108,16 @@ dat <- can_wide_aggregate %>%
   arrange(system_key,
           yrq) %>%
   # left_join(compass.weekly) %>%
+# <<<<<<< HEAD
   left_join(compass.wide,
             by = c('system_key' = 'system_key',
                    'yrq' = 'yrq')) %>%
+# =======
+#   left_join(compass.weekly,
+#             by = c('system_key' = 'system_key',
+#                    'yrq' = 'yrq',
+#                    'week' = 'week')) %>%
+# >>>>>>> c89b9e3a4f50fd53cb442a2dad8f9811a0e0b9c6
   janitor::clean_names() %>%
   replace_na(list(qgpa15 = 0,
                   qgpa20 = 0,
