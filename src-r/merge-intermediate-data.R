@@ -9,24 +9,42 @@ setwd(rstudioapi::getActiveProject())
 can_au20 <- read_csv('data-intermediate/canvas-au20.csv')
 can_sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
 can_su20 <- read_csv('data-intermediate/canvas-su20.csv')
-can_dat <- bind_rows(can_au20, can_sp20, can_su20)
+can_long_raw <- bind_rows(can_au20, can_sp20, can_su20)
 rm(can_au20, can_sp20, can_su20)
+
+
+# Widen canvas ------------------------------------------------------------
+# canvas_wide_courses <- can_long %>% pivot_wider(names_from = 'week',
+#                                    values_from = c('page_views', 'page_views_level', 'partic', 'partic_level',
+#                                                    'tot_assgns', 'tot_assgns_on_time', 'tot_assgn_late',
+#                                                    'tot_assgn_missing', 'tot_assgn_floating', 'score',
+#                                                    'n_assign', 'wk_pts_poss', ),
+#                                    names_prefix = 'wk')
+
+
 
 # Need to split the canvas data up based on what we can/can't know and lag a subset of variables
 # First filtering by the canvas data to reduce some overhead
 sdb_dat <- read_csv('data-intermediate/refac-au20-eop-sdb-data.csv') %>%
-  filter(system_key %in% unique(can_dat$system_key)) %>%
-  select(-num_ind_study)
+  filter(system_key %in% unique(can_long$system_key)) %>%
+  select(-num_ind_study, -extpremajor)
 
 # Then reduce canvas to EOP students
 # This current setup requires aggregating the canvas data
-can_dat <- can_dat %>%
+can_long_aggr <- can_long_raw %>%
   semi_join(sdb_dat, by = c('system_key' = 'system_key')) %>%
   group_by(system_key, user_id, yrq, week) %>%
   summarize_at(vars(page_views, page_views_level, partic, partic_level, tot_assgns, tot_assgns_on_time, tot_assgn_late,
                     tot_assgn_missing, tot_assgn_floating, score, n_assign, wk_pts_poss), mean)
 
-
+# WIDEN aggregate canvas data
+can_wide_aggr <- can_long_aggr %>%
+  pivot_wider(names_from = 'week',
+              values_from = c('page_views', 'page_views_level', 'partic', 'partic_level',
+                              'tot_assgns', 'tot_assgns_on_time', 'tot_assgn_late',
+                              'tot_assgn_missing', 'tot_assgn_floating', 'score',
+                              'n_assign', 'wk_pts_poss', ),
+              names_prefix = 'wk')
 
 # Gen lags and subset data ------------------------------------------------
 
@@ -52,9 +70,9 @@ sdb_dat <- sdb_dat %>%
   arrange(system_key, yrq) %>%
   mutate(across(.cols = lvars, .fns = lag, default = 0, .names = "lag_{.col}")) %>%
   ungroup() %>%
-  filter(yrq %in% unique(can_dat$yrq)) %>%
+  filter(yrq %in% unique(can_long$yrq)) %>%
   select(-lvars)
-rm(lvars)
+# rm(lvars)
 
 
 # tidy up and add compass data ----------------------------------------------------
@@ -68,26 +86,32 @@ compass.feats <- compass.feats %>%
   select(system_key, yrq, visit_advising, visit_ic, sum_visit_advising, sum_visit_ic)
 compass.weekly <- compass.weekly %>% filter(week > 0) %>% arrange(system_key, yrq, week)
 
+compass.wide <- compass.weekly %>%
+  select(-visit_ic) %>%
+  filter(week > 0) %>%
+  arrange(yrq, week) %>%
+  pivot_wider(names_from = 'week', values_from = 'visit_advising', names_prefix = 'visit_advising_wk',
+              values_fill = list(visit_advising = 0))
+
+
 # Combine sdb and canvas to create dataset --------------------------------
 # Merge SDB+Canvas+Compass.
-# Compass feats has duplicated name, let's use weekly data
 
-dat <- can_dat %>%
+dat <- can_wide_aggregate %>%
   left_join(sdb_dat, by = c('system_key' = 'system_key', 'yrq' = 'yrq')) %>%
   select(system_key,
          uw_netid,
          user_id,
          major_abbr,
          yrq,
-         week,
          everything()) %>%
   arrange(system_key,
-          yrq,
-          week) %>%
+          yrq) %>%
   # left_join(compass.weekly) %>%
-  left_join(compass.weekly, by = c('system_key', 'yrq', 'week')) %>%
+  left_join(compass.wide,
+            by = c('system_key' = 'system_key',
+                   'yrq' = 'yrq')) %>%
   janitor::clean_names() %>%
-  select(-visit_ic) %>%
   replace_na(list(qgpa15 = 0,
                   qgpa20 = 0,
                   probe = 0,
@@ -115,5 +139,9 @@ dat <- can_dat %>%
 # add y -------------------------------------------------------------------
 
 yv <- read_csv('data-prepped/eop-aggr-yvar.csv')
-dat %>% inner_join(yv) %>% write_csv('data-prepped/eop-aggr-au20-prototyping-data.csv')
+dat %>% filter(yrq < 20204) %>% inner_join(yv) %>% write_csv('data-prepped/eop-aggr-au20-prototyping-data.csv')
 dat %>% filter(yrq == 20204) %>% write_csv('data-prepped/eop-aggr-au20-for-new-preds.csv')
+
+# save some canvas + y files too for other analyses
+can_wide_aggr %>% left_join(yv) %>% write_csv('data-intermediate/canvas-eop-wide-prototyping.csv')
+can_long_aggr %>% left_join(yv) %>% write_csv('data-intermediate/canvas-eop-long-prototyping.csv')
