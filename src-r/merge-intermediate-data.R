@@ -6,6 +6,8 @@ setwd(rstudioapi::getActiveProject())
 
 
 # combine SDB and canvas --------------------------------------------------
+# TODO automate reading + binding canvas-xxxx.csv files
+#      as in `au20-dev-proto-data.R`
 can_au20 <- read_csv('data-intermediate/canvas-au20.csv')
 can_sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
 can_su20 <- read_csv('data-intermediate/canvas-su20.csv')

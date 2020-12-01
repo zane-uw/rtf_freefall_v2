@@ -61,10 +61,10 @@ link_students <- function(){
 
   db <- tbl(con, in_schema('sec', 'student_1')) %>%
     filter(last_yr_enrolled >= 2006) %>%
-    # caveat emptor: name_lowc is actually proper noun case, no lower
+    # caveat emptor: name_lowc is actually proper noun case, not lower
     select(system_key, uw_netid, student_name_lowc) %>%
     collect() %>%
-    # correction(s) necessary for compatability
+    # correction(s) necessary for compatibility
     mutate_if(is.character, str_replace_all, pattern = " ", replacement = "")
 
   # try multiple ways of merging since regid is not accessible w/o dev token to SWS
