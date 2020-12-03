@@ -1,3 +1,6 @@
+## This is a rough translation of freefall V1 data pull to
+## create an intermediate dataset that is passed on to the `merge-intermediate-data.R` file.
+
 rm(list = ls())
 
 library(tidyverse)
@@ -8,6 +11,7 @@ setwd(rstudioapi::getActiveProject())
 
 # floor for historical data
 YRQ_0 <- 20154
+# convenience var
 EOP_CODES <- c(1, 2, 13, 14, 16, 17, 31, 32, 33)
 
 # **SDB DATA** ----------------------------------------------------------------
