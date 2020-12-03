@@ -7,6 +7,8 @@ library(tidyverse)
 library(odbc)
 library(dbplyr)
 
+# Will build an aggregated canvas file by combining existing weeks for a given term (ie folder) prefix.
+# File output to user input option option-relpath/
 
 # Parse options -----------------------------------------------------------
 # User input
@@ -21,7 +23,8 @@ optls <- list(make_option(c('--term'),
               make_option(c('--dir'),
                           type = 'character',
                           default = NULL,
-                          help = 'RELpath to project dir [default = %default]'),
+                          help = 'RELpath to _project_ dir, most likely `../` if this file is in `project/src-r`.
+                            Will raise an error if `project/data-intermediate` does not exist [default = %default]'),
               make_option(c('--dns'),
                           type = 'character',
                           default = 'sqlserver01',
@@ -39,6 +42,10 @@ if (is.null(opts$term)){
 
 setwd(opts$dir)
 TERM = opts$term
+
+if (!file.exists('data-intermediate/')){
+  stop('./data-intermediate/ folder not found, are you sure this is the right directory?')
+}
 
 # Data builder functions --------------------------------------------------
 
