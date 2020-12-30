@@ -1,6 +1,8 @@
 ## This is a rough translation of freefall V1 data pull to
 ## create an intermediate dataset that is passed on to the `merge-intermediate-data.R` file.
 
+## Incorporating ISS w/ addtl query
+
 rm(list = ls())
 
 library(tidyverse)
@@ -24,14 +26,13 @@ con <- dbConnect(odbc(), 'sqlserver01')
 # current year, quarter
 # filtering query for EOP students
 
-# academic calendar
-cal <- tbl(con, in_schema("EDWPresentation.sec", "dimDate")) %>%
-  select(yrq = AcademicQtrKeyId, dt = CalendarDate)
+
 
 currentq <- tbl(con, in_schema("sec", "sdbdb01")) %>%
-  select(current_yr, current_qtr, gl_first_day) %>%
+  select(current_yr, current_qtr, gl_first_day, gl_regis_year, gl_regis_qtr) %>%
   # collect() %>%
-  mutate(current_yrq = current_yr*10 + current_qtr)
+  mutate(current_yrq = current_yr*10 + current_qtr,
+         regis_yrq = gl_regis_year*10 + gl_regis_qtr)
 
 db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
   filter(special_program %in% EOP_CODES) %>%
@@ -39,18 +40,22 @@ db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
   full_join( tbl(con, in_schema('sec', 'registration')) %>%
                filter(special_program %in% EOP_CODES) %>%
                select(system_key)
-             ) %>%
+  ) %>%
   full_join( tbl(con, in_schema('sec', 'student_1')) %>%
                filter(spcl_program %in% EOP_CODES) %>%
                select(system_key)
-             ) %>%
+  ) %>%
+# ADD ISS students
+  full_join( tbl(con, in_schema('sec', 'student_1_college_major')) %>%
+               filter(major_abbr == "ISS O") %>%
+               select(system_key)
+  ) %>%
   distinct()
-
 
 
 # TRANSCRIPTS -------------------------------------------------------------
 
-create.transcripts <- function(from_yrq = YRQ_0){
+get.transcripts <- function(from_yrq = YRQ_0){
   transcript <- tbl(con, in_schema("sec", "transcript")) %>%
     semi_join(db.eop) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
@@ -61,7 +66,7 @@ create.transcripts <- function(from_yrq = YRQ_0){
            honors_program,
            tenth_day_credits,
            scholarship_type,
-           yearly_honor_type,
+           # yearly_honor_type,
            num_ind_study,
            num_courses,
            qtr_grade_points,
@@ -73,30 +78,40 @@ create.transcripts <- function(from_yrq = YRQ_0){
            qtr_deductible,
            over_qtr_deduct) %>%
     collect() %>%
-    mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt),                           # NB mssql doesn't support pmax
-           attmp = pmax(qtr_graded_attmp, over_qtr_grade_at),
-           nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd),
-           deduct = pmax(qtr_deductible, over_qtr_deduct),
+    mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),           # NB mssql doesn't support pmax
+           attmp = pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
+           nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
+           deduct = pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
            qgpa = pts / attmp,
-           tot_creds = attmp + nongrd - deduct,
-           qgpa15 = if_else(qgpa <= 1.5, 1, 0),
-           qgpa20 = if_else(qgpa <= 2, 1, 0),
-           probe = if_else(scholarship_type == 3, 1, 0)) %>%
+           tot_creds = attmp + nongrd - deduct) %>%
+    # removing these for simplifying this querying in favor of transformations/feat-eng later
+    # qgpa15 = if_else(qgpa <= 1.5, 1, 0),
+    # qgpa20 = if_else(qgpa <= 2, 1, 0)) %>%
+    # Removed `probe` in favor of using set of dummy or factor encoding for scholarship_type late
     select(-starts_with('over_qtr'),
            -qtr_grade_points,
            -qtr_graded_attmp,
            -qtr_nongrd_earned,
            -qtr_deductible)
 
+  return(transcript)
+}
+
+get.registration <- function(){
   # combine with current quarter from registration
   # need to calculate attempted from the regis_courses current
   reg.courses <- tbl(con, in_schema('sec', 'registration_courses')) %>%
-    semi_join(currentq, by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
     semi_join(db.eop) %>%
-    # [TODO] need to include everyone - repeats ok, duplicate not?
-    #  ...   and that means figuring out how to include students who w/drew after 10th day?
-    # filter(request_status %in% c('', '')
-    filter(!(request_status %in% c('E', 'L')))
+    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
+    # E = course canceled
+    # L = withdrawal before quarter
+    # filter(!(request_status %in% c('E', 'L')))
+    filter(request_status %in% c('A', 'C', 'R'))
+
+  # [TODO] need to include everyone - repeats ok, duplicate not?
+  #  ...   and that means figuring out how to include students who w/drew after 10th day?
+
+  # NOTES
   # grading_system != 9,
   # system_key == 777087,  # testing
   #request_status %in% c('A', 'C', 'R')
@@ -104,19 +119,15 @@ create.transcripts <- function(from_yrq = YRQ_0){
   # Can we use the first day to selectively preserve records where student dropped?
   # d1 <- currentq %>% select(gl_first_day) %>% collect()
 
-  reg.courses <- reg.courses %>%
-    left_join( select(currentq, current_yr, current_qtr, gl_first_day),
-               by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
-    mutate(to.drop = if_else(request_status == 'D' & request_dt < gl_first_day, 1, 0)) %>%
-    filter(to.drop == 0) %>%
-    select(-to.drop,
-           -gl_first_day)
-  # [TODO]
-  # Let's TRY proceeding with this
-
+  # reg.courses <- reg.courses %>%
+  #   left_join( select(currentq, current_yr, current_qtr, gl_first_day),
+  #              by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
+  #   mutate(to.drop = if_else(request_status == 'D' & request_dt < gl_first_day, 1, 0)) %>%
+  #   filter(to.drop == 0) %>%
+  #   select(-to.drop,
+  #          -gl_first_day)
 
   calc.attmp <- reg.courses %>%
-    # select(system_key, index1, request_status, starts_with('crs_'), grading_system, credits, `repeat`) %>% collect()
     group_by(system_key) %>%
     summarize(attmp = sum(credits, na.rm = T)) %>%
     ungroup()
@@ -127,10 +138,9 @@ create.transcripts <- function(from_yrq = YRQ_0){
     summarize(num_courses = sum(num_courses, na.rm = T)) %>%
     ungroup()
 
-
   # get.current.quarter.reg <- function(){
   curr.reg <- tbl(con, in_schema('sec', 'registration')) %>%
-    semi_join(currentq, by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
+    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
     semi_join(db.eop) %>%
     inner_join(calc.attmp) %>%
     inner_join(calc.num.courses) %>%
@@ -144,18 +154,10 @@ create.transcripts <- function(from_yrq = YRQ_0){
            num_courses) %>%
     collect()
 
-  result <- bind_rows(transcript, curr.reg) %>%
-    group_by(system_key) %>%
-    arrange(system_key, yrq) %>%
-    mutate(cum.pts = cumsum(pts),
-           cum.attmp = cumsum(attmp),
-           cum.gpa = cum.pts / cum.attmp) %>%
-    ungroup()
-
-  return(result)
+  return(curr.reg)
 }
 
-get.courses.taken <- function(){
+get.transcript.courses.taken <- function(){
 
   courses.taken <- tbl(con, in_schema("sec", "transcript_courses_taken")) %>%
     semi_join(db.eop) %>%
@@ -683,12 +685,16 @@ create.late.registrations <- function(){
 
 # HOLDS -------------------------------------------------------------------
 
-create.holds <- function(){
+create.holds <- function(from_yrq = YRQ_0){
+
+  # academic calendar
+  cal <- tbl(con, in_schema("EDWPresentation.sec", "dimDate")) %>%
+    select(yrq = AcademicQtrKeyId, dt = CalendarDate)
 
   holds <- tbl(con, in_schema("sec", "student_1_hold_information")) %>%
+    semi_join(db.eop) %>%
     inner_join(cal, by = c('hold_dt' = 'dt')) %>%
     collect() %>%
-    semi_join(db.eop, copy = T) %>%
     group_by(system_key, yrq) %>%
     summarize(n.holds = n()) %>%
     ungroup() %>%
@@ -704,6 +710,16 @@ create.holds <- function(){
 # this is useful for verification
 
 transcript <- create.transcripts()
+
+# [TODO] moving mutate funs from transcript/reg functions
+# mutate(cum.pts = cumsum(pts),
+  #     cum.attmp = cumsum(attmp),
+   #    cum.gpa = cum.pts / cum.attmp) %>%
+
+regis <- get.registration()
+
+
+
 courses.taken <- get.courses.taken()
 derived.courses.taken.data <- create.derived.courses.taken.tscs.data() %>% select(-starts_with('cumavg.dept'), -starts_with('nclass.dept'), -starts_with('csum.dept'))
 majors <- create.major.data()

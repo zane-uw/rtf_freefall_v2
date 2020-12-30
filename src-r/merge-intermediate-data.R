@@ -28,7 +28,7 @@ rm(can_au20, can_sp20, can_su20)
 # Need to split the canvas data up based on what we can/can't know and lag a subset of variables
 # First filtering by the canvas data to reduce some overhead
 sdb_dat <- read_csv('data-intermediate/refac-au20-eop-sdb-data.csv') %>%
-  filter(system_key %in% unique(can_long$system_key)) %>%
+  filter(system_key %in% unique(can_long_raw$system_key)) %>%
   select(-num_ind_study, -extpremajor)
 
 # Then reduce canvas to EOP students
@@ -36,16 +36,34 @@ sdb_dat <- read_csv('data-intermediate/refac-au20-eop-sdb-data.csv') %>%
 can_long_aggr <- can_long_raw %>%
   semi_join(sdb_dat, by = c('system_key' = 'system_key')) %>%
   group_by(system_key, user_id, yrq, week) %>%
-  summarize_at(vars(page_views, page_views_level, partic, partic_level, tot_assgns, tot_assgns_on_time, tot_assgn_late,
-                    tot_assgn_missing, tot_assgn_floating, score, n_assign, wk_pts_poss), mean)
+  summarize_at(vars(page_views,
+                    page_views_level,
+                    partic,
+                    partic_level,
+                    tot_assgns,
+                    tot_assgns_on_time,
+                    tot_assgn_late,
+                    tot_assgn_missing,
+                    tot_assgn_floating,
+                    score,
+                    n_assign,
+                    wk_pts_poss), mean)
 
 # WIDEN aggregate canvas data
 can_wide_aggr <- can_long_aggr %>%
   pivot_wider(names_from = 'week',
-              values_from = c('page_views', 'page_views_level', 'partic', 'partic_level',
-                              'tot_assgns', 'tot_assgns_on_time', 'tot_assgn_late',
-                              'tot_assgn_missing', 'tot_assgn_floating', 'score',
-                              'n_assign', 'wk_pts_poss', ),
+              values_from = c('page_views',
+                              'page_views_level',
+                              'partic',
+                              'partic_level',
+                              'tot_assgns',
+                              'tot_assgns_on_time',
+                              'tot_assgn_late',
+                              'tot_assgn_missing',
+                              'tot_assgn_floating',
+                              'score',
+                              'n_assign',
+                              'wk_pts_poss'),
               names_prefix = 'wk')
 
 # Gen lags and subset data ------------------------------------------------
