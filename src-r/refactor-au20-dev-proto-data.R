@@ -159,10 +159,10 @@ get.registration <- function(){
 
 get.transcript.courses.taken <- function(){
 
-  courses.taken <- tbl(con, in_schema("sec", "transcript_courses_taken")) %>%
-    semi_join(db.eop) %>%
+  result <- tbl(con, in_schema("sec", "transcript_courses_taken")) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
     filter(yrq >= YRQ_0) %>%
+    semi_join(db.eop) %>%
     select(system_key,
            yrq,
            course.index = index1,
@@ -177,7 +177,7 @@ get.transcript.courses.taken <- function(){
            honor_course,
            section_id) %>%
     collect() %>%
-    mutate_if(is.character, trimws) %>%         # doesn't work correctly remotely, unsafe to do other string mutations w/ output before trimming
+    mutate_if(is.character, trimws) %>%         # doesn't work remotely
     # but don't want to build the course code w/ the extra whitespace :\
     # rename(course.index = index1) %>%
     mutate(course = paste(dept_abbrev, course_number, sep = "_"),
@@ -201,10 +201,16 @@ get.transcript.courses.taken <- function(){
            course.nogpa = if_else(grade %in% c("", "CR", "H", "HP", "HW", "I", "N", "NC", "NS", "P", "S", "W", "W3", "W4", "W5", "W6", "W7"), 1, 0),
            course.alt.grading = if_else(grade %in% c('CR', 'S', 'NS', 'P', 'HP', 'NC'), 1, 0))
 
-  # combine with current quarter course reg
-  curr.qtr <- tbl(con, in_schema('sec', 'registration_courses')) %>%
+  return(result)
+
+}
+
+get.reg.courses.taken <- function(){
+  # This query makes next qtr registration  compatible, ie bindable by row, with
+  # older transcript courses taken
+  result <- tbl(con, in_schema('sec', 'registration_courses')) %>%
     semi_join(db.eop) %>%
-    semi_join(currentq, by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
+    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
     filter(request_status %in% c('A', 'C', 'R')) %>%
     collect() %>%
     mutate_if(is.character, trimws) %>%
@@ -235,7 +241,7 @@ get.transcript.courses.taken <- function(){
     ungroup()
 
 
-  result <- bind_rows(courses.taken, curr.qtr) %>% distinct() %>% replace_na(list('duplicate_indic' = 0))
+  # result <- bind_rows(courses.taken, curr.qtr) %>% distinct() %>% replace_na(list('duplicate_indic' = 0))
 
   return(result)
 }
@@ -245,8 +251,11 @@ get.transcript.courses.taken <- function(){
 create.derived.courses.taken.tscs.data <- function(){
   # combining the following calculations that have `courses.taken` as a dependency and
   # return ~ equally long combined table
+  courses.taken <- bind_rows(get.transcript.courses.taken(),
+                             get.reg.courses.taken()) %>%
+    distinct() %>%
+    replace_na(list('duplicate_indic' = 0))
 
-  courses.taken <- get.courses.taken()
 
   # total of fees, courses taken in different gen ed categories
   # vlpa, qsr, etc.
@@ -401,19 +410,38 @@ create.derived.courses.taken.tscs.data <- function(){
 
 # MAJORS ------------------------------------------------------------------
 
-create.major.data <- function(){
+get.major.data <- function(){
 
-  # for current q
-  reg.major <- tbl(con, in_schema('sec', 'registration_regis_col_major')) %>%
+  # for compatability > CURRENT REGISTRATION QTR
+  # name changes are for model compatability
+  # I'm not sure if actually makes sense to use this rather than s_1
+  # but s_1 doesn't have a useful notion of quarter
+
+  # reg.major <- tbl(con, in_schema('sec', 'registration_regis_col_major')) %>%
+  #   semi_join(db.eop) %>%
+  #   inner_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
+  #   select(system_key,
+  #          yrq = regis_yrq,
+  #          index1,
+  #          tran_yr = regis_yr,
+  #          tran_qtr = regis_qtr,
+  #          tran_major_abbr = regis_major_abbr)
+
+
+  curr.filter <- tbl(con, in_schema('sec', 'registration')) %>%
+    inner_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
     semi_join(db.eop) %>%
-    inner_join(currentq, by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
     select(system_key,
-           yrq = current_yrq,
-           index1,
-           tran_yr = regis_yr,
-           tran_qtr = regis_qtr,
-           tran_major_abbr = regis_major_abbr)
+           regis_yrq)
 
+  curr.major <- tbl(con, in_schema('sec', 'student_1_college_major')) %>%
+    inner_join(curr.filter) %>%
+    select(system_key,
+           yrq = regis_yrq,
+           index1,
+           tran_major_abbr = major_abbr)
+
+  # transcripted majors, old quarters
   mjr <- tbl(con, in_schema("sec", "transcript_tran_col_major")) %>%
     semi_join(db.eop) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
@@ -421,10 +449,8 @@ create.major.data <- function(){
     select(system_key,
            yrq,
            index1,
-           tran_yr,
-           tran_qtr,
            tran_major_abbr) %>%
-    full_join(reg.major) %>%
+    full_join(curr.major) %>%
     distinct() %>%
     collect() %>%
     mutate_if(is.character, trimws)
@@ -450,43 +476,47 @@ create.major.data <- function(){
     ungroup() %>%
     # add double majors
     inner_join(dual.majors)
+
   rm(dual.majors)
 
   stu.major$n.majors <- unlist(tapply(stu.major$tran_major_abbr,
                                       stu.major$system_key,
                                       function(x) { rep(seq_along(rle(x)$lengths), times = rle(x)$lengths) }))
 
-  # this is one way to do it, i initially thought i might make use of the combined strings
-  maj.w <- mjr %>% pivot_wider(., id_cols = c('system_key', 'yrq'), names_from = index1, names_prefix = 'maj_', values_from = tran_major_abbr)
+  # # dropping the 'wide' major portion for the time being
+  # # this is one way to do it, i initially thought i might make use of the combined strings
+  # maj.w <- mjr %>% pivot_wider(., id_cols = c('system_key', 'yrq'), names_from = index1, names_prefix = 'maj_', values_from = tran_major_abbr)
+  #
+  # # find: pre-major, 'N MATR', 'T NM', 'B NM'
+  # maj.w$majors <- apply(maj.w[,3:5], 1, paste0, collapse = " - ")
+  # maj.w$premajor <- ifelse(grepl("PRE|EPRM", maj.w$majors, ignore.case = T), 1, 0)
+  # maj.w$nonmatric <- ifelse(grepl("N MATR | T NM | B NM", maj.w$majors), 1, 0)
+  # maj.w$extpremajor <- ifelse(grepl("EPRM", maj.w$majors, ignore.case = T), 1, 0)
+  # maj.w <- maj.w %>%
+  #   select(system_key,
+  #          yrq,
+  #          premajor,
+  #          nonmatric,
+  #          extpremajor)
+  #
+  # # Then do the 'classes in major' by making a larger table from major + xf.trs.courses, then reducing it
+  # maj.courses.taken <- courses.taken %>%
+  #   select(system_key, yrq, dept_abbrev) %>%
+  #   left_join(mjr) %>%
+  #   mutate(course.equals.major = ifelse(tran_major_abbr == dept_abbrev, 1, 0)) %>%
+  #   group_by(system_key, yrq) %>%
+  #   summarize(n.major.courses = sum(course.equals.major)) %>%
+  #   group_by(system_key, .add = F) %>%
+  #   arrange(system_key, yrq) %>%
+  #   mutate(csum.major.courses = cumsum(n.major.courses)) %>%
+  #   ungroup()
+  #
+  # # simplify the result(s) to 1 table
+  # result <- stu.major %>%
+  #   inner_join(maj.w) %>%
+  #   left_join(maj.courses.taken)
 
-  # find: pre-major, 'N MATR', 'T NM', 'B NM'
-  maj.w$majors <- apply(maj.w[,3:5], 1, paste0, collapse = " - ")
-  maj.w$premajor <- ifelse(grepl("PRE|EPRM", maj.w$majors, ignore.case = T), 1, 0)
-  maj.w$nonmatric <- ifelse(grepl("N MATR | T NM | B NM", maj.w$majors), 1, 0)
-  maj.w$extpremajor <- ifelse(grepl("EPRM", maj.w$majors, ignore.case = T), 1, 0)
-  maj.w <- maj.w %>%
-    select(system_key,
-           yrq,
-           premajor,
-           nonmatric,
-           extpremajor)
-
-  # Then do the 'classes in major' by making a larger table from major + xf.trs.courses, then reducing it
-  maj.courses.taken <- courses.taken %>%
-    select(system_key, yrq, dept_abbrev) %>%
-    left_join(mjr) %>%
-    mutate(course.equals.major = ifelse(tran_major_abbr == dept_abbrev, 1, 0)) %>%
-    group_by(system_key, yrq) %>%
-    summarize(n.major.courses = sum(course.equals.major)) %>%
-    group_by(system_key, .add = F) %>%
-    arrange(system_key, yrq) %>%
-    mutate(csum.major.courses = cumsum(n.major.courses)) %>%
-    ungroup()
-
-  # simplify the result(s) to 1 table
-  result <- stu.major %>%
-    inner_join(maj.w) %>%
-    left_join(maj.courses.taken)
+  result <- stu.major
 
   return(result)
 }
@@ -494,7 +524,7 @@ create.major.data <- function(){
 
 # STUDENT_1, EDW, AGE -------------------------------------------------------
 
-create.stu1 <- function(){
+get.stu1 <- function(){
   # dimstu <- tbl(con, in_schema('EDWPresentation.sec', 'dimStudent')) %>%
   #   semi_join(db.eop, by = c('SDBSrcSystemKey' = 'system_key'), copy = T) %>%
   #   group_by(SDBSrcSystemKey) %>%
@@ -718,9 +748,9 @@ transcript <- create.transcripts()
 
 regis <- get.registration()
 
+tran.courses <- get.transcript.courses.taken()
+reg.courses <- get.reg.courses.taken()
 
-
-courses.taken <- get.courses.taken()
 derived.courses.taken.data <- create.derived.courses.taken.tscs.data() %>% select(-starts_with('cumavg.dept'), -starts_with('nclass.dept'), -starts_with('csum.dept'))
 majors <- create.major.data()
 stu.age <- calc.adjusted.age()
