@@ -55,11 +55,13 @@ db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
 
 # TRANSCRIPTS -------------------------------------------------------------
 
-get.transcripts <- function(from_yrq = YRQ_0){
+# in addition to getting the raw transcript file need to calculate actual points, credits, etc.
+
+get.transcripts <- function(){
   transcript <- tbl(con, in_schema("sec", "transcript")) %>%
     semi_join(db.eop) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
-    filter(yrq >= from_yrq) %>%       # tran_qtr != 3, add_to_cum == 1
+    filter(yrq >= YRQ_0) %>%       # tran_qtr != 3, add_to_cum == 1
     select(system_key,
            yrq,
            class,
@@ -715,7 +717,7 @@ create.late.registrations <- function(){
 
 # HOLDS -------------------------------------------------------------------
 
-create.holds <- function(from_yrq = YRQ_0){
+create.holds <- function(){
 
   # academic calendar
   cal <- tbl(con, in_schema("EDWPresentation.sec", "dimDate")) %>%
