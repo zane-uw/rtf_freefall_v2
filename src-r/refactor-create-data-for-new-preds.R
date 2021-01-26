@@ -190,6 +190,9 @@ stem_course_data <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurricul
 
 
 
+
+
+
 # name fixes/transformations/feat engineering ----------------------------------------
 #
 # mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),           # NB mssql doesn't support pmax

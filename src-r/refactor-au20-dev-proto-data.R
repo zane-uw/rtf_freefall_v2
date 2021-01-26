@@ -19,18 +19,15 @@ EOP_CODES <- c(1, 2, 13, 14, 16, 17, 31, 32, 33)
 # **SDB DATA** ----------------------------------------------------------------
 
 # !kinit
-con <- dbConnect(odbc(), 'sqlserver01')
+con <- dbConnect(odbc(), 'sqlserver01', UID = config::get('sdb')$uid, PWD = config::get('sdb')$pwd)
 
 # Utility table expressions -------------------------------------------------------------------
 # calendar
 # current year, quarter
 # filtering query for EOP students
-
-
-
 currentq <- tbl(con, in_schema("sec", "sdbdb01")) %>%
   select(current_yr, current_qtr, gl_first_day, gl_regis_year, gl_regis_qtr) %>%
-  # collect() %>%
+  collect() %>%
   mutate(current_yrq = current_yr*10 + current_qtr,
          regis_yrq = gl_regis_year*10 + gl_regis_qtr)
 
@@ -57,113 +54,116 @@ db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
 
 # in addition to getting the raw transcript file need to calculate actual points, credits, etc.
 
-get.transcripts <- function(){
-  transcript <- tbl(con, in_schema("sec", "transcript")) %>%
-    semi_join(db.eop) %>%
+# converting from function to query - transformations should be done later
+transcript <- tbl(con, in_schema("sec", "transcript")) %>%
+  semi_join(db.eop) %>%
+  mutate(yrq = tran_yr*10 + tran_qtr) %>%
+  filter(yrq >= YRQ_0,
+         yrq < local(currentq$current_yrq)) %>%       # tran_qtr != 3, add_to_cum == 1
+  select(system_key,
+         yrq,
+         class,
+         honors_program,
+         tenth_day_credits,
+         scholarship_type,
+         # yearly_honor_type,
+         num_ind_study,
+         num_courses,
+         qtr_grade_points,
+         qtr_graded_attmp,
+         over_qtr_grade_pt,
+         over_qtr_grade_at,
+         qtr_nongrd_earned,
+         over_qtr_nongrd,
+         qtr_deductible,
+         over_qtr_deduct)
+# collect() %>%
+# removing these for simplifying this querying in favor of transformations/feat-eng later
+# mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),           # NB mssql doesn't support pmax
+#        attmp = pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
+#        nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
+#        deduct = pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
+#        qgpa = pts / attmp,
+#        tot_creds = attmp + nongrd - deduct) %>%
+# # qgpa15 = if_else(qgpa <= 1.5, 1, 0),
+# qgpa20 = if_else(qgpa <= 2, 1, 0)) %>%
+# Removed `probe` in favor of using set of dummy or factor encoding for scholarship_type late
+# select(-starts_with('over_qtr'),
+#        -qtr_grade_points,
+#        -qtr_graded_attmp,
+#        -qtr_nongrd_earned,
+#        -qtr_deductible)
+
+
+## DON'T USE CURRENT REGISTRATION
+## keep training data discrete and build separate script for
+## unseen data for current predictions
+#
+# get.registration <- function(){
+#   # combine with current quarter from registration
+#   # need to calculate attempted from the regis_courses current
+#   reg.courses <- tbl(con, in_schema('sec', 'registration_courses')) %>%
+#     semi_join(db.eop) %>%
+#     semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
+#     # E = course canceled
+#     # L = withdrawal before quarter
+#     # filter(!(request_status %in% c('E', 'L')))
+#     filter(request_status %in% c('A', 'C', 'R'))
+#
+#   # [TODO] need to include everyone - repeats ok, duplicate not?
+#   #  ...   and that means figuring out how to include students who w/drew after 10th day?
+#
+#   # NOTES
+#   # grading_system != 9,
+#   # system_key == 777087,  # testing
+#   #request_status %in% c('A', 'C', 'R')
+#   # `repeat` == '0' | is.na(`repeat`) | `repeat` == '',)
+#   # Can we use the first day to selectively preserve records where student dropped?
+#   # d1 <- currentq %>% select(gl_first_day) %>% collect()
+#
+#   # reg.courses <- reg.courses %>%
+#   #   left_join( select(currentq, current_yr, current_qtr, gl_first_day),
+#   #              by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
+#   #   mutate(to.drop = if_else(request_status == 'D' & request_dt < gl_first_day, 1, 0)) %>%
+#   #   filter(to.drop == 0) %>%
+#   #   select(-to.drop,
+#   #          -gl_first_day)
+#
+#   calc.attmp <- reg.courses %>%
+#     group_by(system_key) %>%
+#     summarize(attmp = sum(credits, na.rm = T)) %>%
+#     ungroup()
+#   calc.num.courses <- reg.courses %>%
+#     group_by(system_key, crs_curric_abbr) %>%
+#     summarize(num_courses = n_distinct(crs_number)) %>%
+#     group_by(system_key, add = F) %>%
+#     summarize(num_courses = sum(num_courses, na.rm = T)) %>%
+#     ungroup()
+#
+#   # get.current.quarter.reg <- function(){
+#   curr.reg <- tbl(con, in_schema('sec', 'registration')) %>%
+#     semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
+#     semi_join(db.eop) %>%
+#     inner_join(calc.attmp) %>%
+#     inner_join(calc.num.courses) %>%
+#     mutate(yrq = regis_yr*10 + regis_qtr) %>%
+#     select(system_key,
+#            yrq,
+#            class = regis_class,
+#            honors_program = regis_hnrs_prg,
+#            tenth_day_credits,
+#            attmp,
+#            num_courses) %>%
+#     collect()
+#
+#   return(curr.reg)
+# }
+
+# get.transcript.courses.taken <- function(){
+  tr_courses_taken <- tbl(con, in_schema("sec", "transcript_courses_taken")) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
-    filter(yrq >= YRQ_0) %>%       # tran_qtr != 3, add_to_cum == 1
-    select(system_key,
-           yrq,
-           class,
-           honors_program,
-           tenth_day_credits,
-           scholarship_type,
-           # yearly_honor_type,
-           num_ind_study,
-           num_courses,
-           qtr_grade_points,
-           qtr_graded_attmp,
-           over_qtr_grade_pt,
-           over_qtr_grade_at,
-           qtr_nongrd_earned,
-           over_qtr_nongrd,
-           qtr_deductible,
-           over_qtr_deduct) %>%
-    collect() %>%
-    mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),           # NB mssql doesn't support pmax
-           attmp = pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
-           nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
-           deduct = pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
-           qgpa = pts / attmp,
-           tot_creds = attmp + nongrd - deduct) %>%
-    # removing these for simplifying this querying in favor of transformations/feat-eng later
-    # qgpa15 = if_else(qgpa <= 1.5, 1, 0),
-    # qgpa20 = if_else(qgpa <= 2, 1, 0)) %>%
-    # Removed `probe` in favor of using set of dummy or factor encoding for scholarship_type late
-    select(-starts_with('over_qtr'),
-           -qtr_grade_points,
-           -qtr_graded_attmp,
-           -qtr_nongrd_earned,
-           -qtr_deductible)
-
-  return(transcript)
-}
-
-get.registration <- function(){
-  # combine with current quarter from registration
-  # need to calculate attempted from the regis_courses current
-  reg.courses <- tbl(con, in_schema('sec', 'registration_courses')) %>%
-    semi_join(db.eop) %>%
-    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
-    # E = course canceled
-    # L = withdrawal before quarter
-    # filter(!(request_status %in% c('E', 'L')))
-    filter(request_status %in% c('A', 'C', 'R'))
-
-  # [TODO] need to include everyone - repeats ok, duplicate not?
-  #  ...   and that means figuring out how to include students who w/drew after 10th day?
-
-  # NOTES
-  # grading_system != 9,
-  # system_key == 777087,  # testing
-  #request_status %in% c('A', 'C', 'R')
-  # `repeat` == '0' | is.na(`repeat`) | `repeat` == '',)
-  # Can we use the first day to selectively preserve records where student dropped?
-  # d1 <- currentq %>% select(gl_first_day) %>% collect()
-
-  # reg.courses <- reg.courses %>%
-  #   left_join( select(currentq, current_yr, current_qtr, gl_first_day),
-  #              by = c('regis_yr' = 'current_yr', 'regis_qtr' = 'current_qtr')) %>%
-  #   mutate(to.drop = if_else(request_status == 'D' & request_dt < gl_first_day, 1, 0)) %>%
-  #   filter(to.drop == 0) %>%
-  #   select(-to.drop,
-  #          -gl_first_day)
-
-  calc.attmp <- reg.courses %>%
-    group_by(system_key) %>%
-    summarize(attmp = sum(credits, na.rm = T)) %>%
-    ungroup()
-  calc.num.courses <- reg.courses %>%
-    group_by(system_key, crs_curric_abbr) %>%
-    summarize(num_courses = n_distinct(crs_number)) %>%
-    group_by(system_key, add = F) %>%
-    summarize(num_courses = sum(num_courses, na.rm = T)) %>%
-    ungroup()
-
-  # get.current.quarter.reg <- function(){
-  curr.reg <- tbl(con, in_schema('sec', 'registration')) %>%
-    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
-    semi_join(db.eop) %>%
-    inner_join(calc.attmp) %>%
-    inner_join(calc.num.courses) %>%
-    mutate(yrq = regis_yr*10 + regis_qtr) %>%
-    select(system_key,
-           yrq,
-           class = regis_class,
-           honors_program = regis_hnrs_prg,
-           tenth_day_credits,
-           attmp,
-           num_courses) %>%
-    collect()
-
-  return(curr.reg)
-}
-
-get.transcript.courses.taken <- function(){
-
-  result <- tbl(con, in_schema("sec", "transcript_courses_taken")) %>%
-    mutate(yrq = tran_yr*10 + tran_qtr) %>%
-    filter(yrq >= YRQ_0) %>%
+    filter(yrq >= YRQ_0,
+           yrq < currentq$current_yrq) %>%
     semi_join(db.eop) %>%
     select(system_key,
            yrq,
@@ -177,76 +177,77 @@ get.transcript.courses.taken <- function(){
            duplicate_indic,
            repeat_course,
            honor_course,
-           section_id) %>%
-    collect() %>%
-    mutate_if(is.character, trimws) %>%         # doesn't work remotely
-    # but don't want to build the course code w/ the extra whitespace :\
-    # rename(course.index = index1) %>%
-    mutate(course = paste(dept_abbrev, course_number, sep = "_"),
-           duplicate_indic = as.numeric(duplicate_indic),
-           numeric.grade = recode(grade,
-                                  "A"  = "40",
-                                  "A-" = "38",
-                                  "B+" = "34",
-                                  "B"  = "31",
-                                  "B-" = "28",
-                                  "C+" = "24",
-                                  "C"  = "21",
-                                  "C-" = "18",
-                                  "D+" = "14",
-                                  "D"  = "11",
-                                  "D-" = "08",
-                                  "E"  = "00",
-                                  "F"  = "00"),
-           numeric.grade = as.numeric(numeric.grade) / 10,
-           course.withdraw = if_else(grepl("W", grade), 1, 0),
-           course.nogpa = if_else(grade %in% c("", "CR", "H", "HP", "HW", "I", "N", "NC", "NS", "P", "S", "W", "W3", "W4", "W5", "W6", "W7"), 1, 0),
-           course.alt.grading = if_else(grade %in% c('CR', 'S', 'NS', 'P', 'HP', 'NC'), 1, 0))
+           section_id) #%>%
+  # moving to later tidy-up/feat eng function(s) for dataset
+    # collect() %>%
+    # mutate_if(is.character, trimws) %>%         # doesn't work remotely
+    # # but don't want to build the course code w/ the extra white space
+    # # rename(course.index = index1) %>%
+    # mutate(course = paste(dept_abbrev, course_number, sep = "_"),
+    #        duplicate_indic = as.numeric(duplicate_indic),
+    #        numeric.grade = recode(grade,
+    #                               "A"  = "40",
+    #                               "A-" = "38",
+    #                               "B+" = "34",
+    #                               "B"  = "31",
+    #                               "B-" = "28",
+    #                               "C+" = "24",
+    #                               "C"  = "21",
+    #                               "C-" = "18",
+    #                               "D+" = "14",
+    #                               "D"  = "11",
+    #                               "D-" = "08",
+    #                               "E"  = "00",
+    #                               "F"  = "00"),
+    #        numeric.grade = as.numeric(numeric.grade) / 10,
+    #        course.withdraw = if_else(grepl("W", grade), 1, 0),
+    #        course.nogpa = if_else(grade %in% c("", "CR", "H", "HP", "HW", "I", "N", "NC", "NS", "P", "S", "W", "W3", "W4", "W5", "W6", "W7"), 1, 0),
+    #        course.alt.grading = if_else(grade %in% c('CR', 'S', 'NS', 'P', 'HP', 'NC'), 1, 0))
 
   return(result)
 
 }
 
-get.reg.courses.taken <- function(){
-  # This query makes next qtr registration  compatible, ie bindable by row, with
-  # older transcript courses taken
-  result <- tbl(con, in_schema('sec', 'registration_courses')) %>%
-    semi_join(db.eop) %>%
-    semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
-    filter(request_status %in% c('A', 'C', 'R')) %>%
-    collect() %>%
-    mutate_if(is.character, trimws) %>%
-    mutate(yrq = regis_yr*10 + regis_qtr,
-           course.alt.grading = if_else(grading_system > 0, 1, 0),
-           duplicate_indic = as.numeric(dup_enroll),
-           # replace_na(list('duplicate_indic' = 0)),
-           repeat_course = if_else(`repeat` %in% c('1', '2', '3'), T, F),
-           course = paste(crs_curric_abbr, crs_number, sep = '_')) %>%
-    select(system_key,
-           yrq,
-           course.index = index1,
-           dept_abbrev = crs_curric_abbr,
-           course_number = crs_number,
-           course_credits = credits,
-           course_branch,
-           summer_term,
-           # grade
-           duplicate_indic,
-           repeat_course,
-           honor_course,
-           section_id = crs_section_id,
-           course,
-           course.alt.grading) %>%
-    group_by(system_key, course) %>%
-    arrange(system_key, course, section_id) %>%
-    filter(row_number() == 1) %>%
-    ungroup()
-
-
-  # result <- bind_rows(courses.taken, curr.qtr) %>% distinct() %>% replace_na(list('duplicate_indic' = 0))
-
-  return(result)
-}
+# get.reg.courses.taken <- function(){
+#   # This query makes next qtr registration  compatible, ie bindable by row, with
+#   # older transcript courses taken
+#   result <- tbl(con, in_schema('sec', 'registration_courses')) %>%
+#     semi_join(db.eop) %>%
+#     semi_join(currentq, by = c('regis_yr' = 'gl_regis_year', 'regis_qtr' = 'gl_regis_qtr')) %>%
+#     filter(request_status %in% c('A', 'C', 'R')) %>%
+#     collect() %>%
+#     mutate_if(is.character, trimws) %>%
+#     mutate(yrq = regis_yr*10 + regis_qtr,
+#            course.alt.grading = if_else(grading_system > 0, 1, 0),
+#            duplicate_indic = as.numeric(dup_enroll),
+#            # replace_na(list('duplicate_indic' = 0)),
+#            repeat_course = if_else(`repeat` %in% c('1', '2', '3'), T, F),
+#            course = paste(crs_curric_abbr, crs_number, sep = '_')) %>%
+#     select(system_key,
+#            yrq,
+#            course.index = index1,
+#            dept_abbrev = crs_curric_abbr,
+#            course_number = crs_number,
+#            course_credits = credits,
+#            course_branch,
+#            summer_term,
+#            # grade
+#            duplicate_indic,
+#            repeat_course,
+#            honor_course,
+#            section_id = crs_section_id,
+#            course,
+#            course.alt.grading) %>%
+#     group_by(system_key, course) %>%
+#     arrange(system_key, course, section_id) %>%
+#     filter(row_number() == 1) %>%
+#     ungroup()
+#
+#
+#   # result <- bind_rows(courses.taken, curr.qtr) %>% distinct() %>% replace_na(list('duplicate_indic' = 0))
+#
+#   return(result)
+# }
 
 # DERIVED COURSES-TAKEN FIELDS ----------------------------------------------
 
