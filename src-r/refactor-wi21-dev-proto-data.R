@@ -62,7 +62,23 @@ get_transcript <- function(){
            scholarship_type,
            # yearly_honor_type,
            num_ind_study,
-           num_courses,
+           num_courses) %>%
+    collect()
+
+  return(transcript)
+}
+
+
+# GPA ---------------------------------------------------------------------
+
+calc_qgpa <- function(){
+  qgpa <- tbl(con, in_schema("sec", "transcript")) %>%
+    semi_join(db.eop) %>%
+    mutate(yrq = tran_yr*10 + tran_qtr) %>%
+    filter(yrq >= YRQ_0,
+           yrq < local(currentq$current_yrq)) %>%       # tran_qtr != 3, add_to_cum == 1
+    select(system_key,
+           yrq,
            qtr_grade_points,
            qtr_graded_attmp,
            over_qtr_grade_pt,
@@ -71,9 +87,20 @@ get_transcript <- function(){
            over_qtr_nongrd,
            qtr_deductible,
            over_qtr_deduct) %>%
-    collect()
+    collect() %>%
+    mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),
+           attmp = pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
+           nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
+           deduct = pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
+           qgpa = pts / attmp,
+           tot_creds = attmp + nongrd - deduct) %>%
+    select(-starts_with('over_qtr'),
+           -qtr_grade_points,
+           -qtr_graded_attmp,
+           -qtr_nongrd_earned,
+           -qtr_deductible)
 
-  return(transcript)
+  return(qgpa)
 }
 
 # Courses taken -----------------------------------------------------------
@@ -364,6 +391,7 @@ calc_adjusted_age <- function(){
 
 
 transcript <- get_transcript()
+qgpa <- calc_qgpa()
 courses_taken <- get_courses_taken()
 majors <- get_major_data()
 stu_age <- calc_adjusted_age()
@@ -386,7 +414,8 @@ stu1 <- create.stu1() %>%
 
 
 # TRANSFORM,  LAGS --------------------------------------------------------
-
+# data that needs to be lagged:
+# GPA,
 
 
 # JOIN --------------------------------------------------------------------
