@@ -1,4 +1,3 @@
-
 rm(list = ls())
 
 library(tidyverse)
@@ -245,11 +244,11 @@ get_late_registrations <- function(){
     distinct() %>%
     collect() %>%
     left_join(syscal) %>%
-    mutate(reg.late.days = as.numeric(difftime(add_dt_tuit, first_day, units = "days"))) %>%
+    mutate(reg_late_days = as.numeric(difftime(add_dt_tuit, first_day, units = "days"))) %>%
     ungroup()
 
-  regc$reg_late_days[regc$reg.late.days <= -365] <- median(regc$reg.late.days[regc$reg.late.days < 0])
-  regc$reg_late_binary <- if_else(regc$reg.late.days >= 0, 1, 0)
+  regc$reg_late_days[regc$reg_late_days <= -365] <- median(regc$reg_late_days[regc$reg_late_days < 0], na.rm = T)
+  regc$reg_late_binary <- if_else(regc$reg_late_days >= 0, 1, 0)
 
   result <- regc %>%
     select(system_key, yrq, reg_late_binary, reg_late_days)
@@ -264,7 +263,7 @@ get_late_registrations <- function(){
 get_holds <- function(){
 
   # academic calendar
-  cal <- tbl(con, in_schema("EDWPresentation.sec", "dimDate")) %>%
+  cal <- tbl(con, in_schema(sql('EDWPresentation.sec'), "dimDate")) %>%
     select(yrq = AcademicQtrKeyId, dt = CalendarDate)
 
   holds <- tbl(con, in_schema("sec", "student_1_hold_information")) %>%
@@ -339,8 +338,10 @@ get_appl_data <- function(){
 # one entry per student
 # will spread to other records per yrq
 get_stu_1 <- function(){
+  # version of sql doesn't support %/%
+  ENR_DIV <- YRQ_0 %/% 10
   stu1 <- tbl(con, in_schema("sec", "student_1")) %>%
-    filter(last_yr_enrolled >= YRQ_0 %/% 10) %>%
+    filter(last_yr_enrolled >= ENR_DIV) %>%
     semi_join(db.eop, by = c('system_key' = 'system_key')) %>%
     select(system_key,
            s1_gender,
@@ -400,8 +401,8 @@ unmet_reqs <- get_unmet_reqs()
 late_reg <- get_late_registrations()
 holds <- get_holds()
 
-stu1 <- create.stu1() %>%
-  # some fixes
+stu1 <- get_stu_1() %>%
+  # some additional fixes
   mutate(running_start = ifelse(running_start == 'Y', 1, 0),
          s1_gender = ifelse(s1_gender == 'F', 1, 0)) %>%
   select(-c(last_yr_enrolled,
@@ -410,12 +411,27 @@ stu1 <- create.stu1() %>%
             admitted_for_qtr,
             current_appl_yr,
             current_appl_qtr,
-            current_appl_no))
+            current_appl_no)) %>%
+  collect()
+
+
+
+# AGGREGATE ---------------------------------------------------------------
+# Convert `courses_taken` many-records-per-qtr to one-per
+
+
 
 
 # TRANSFORM,  LAGS --------------------------------------------------------
-# data that needs to be lagged:
-# GPA,
+# variables that need to be lagged include anything that wouldn't be visible before the end of term
+
+# # 1) mutate transcripts
+# transcript <- transcript %>%
+#   group_by(system_key, yrq) %>%
+#   arrange(system_key, yrq) %>%
+#   mutate(qtr_seq = )
+
+
 
 
 # JOIN --------------------------------------------------------------------

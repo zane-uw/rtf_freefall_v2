@@ -25,11 +25,12 @@ EOP_CODES <- c(1, 2, 13, 14, 16, 17, 31, 32, 33)
 
 
 # SDB DATA ----------------------------------------------------------------
-con <- dbConnect(odbc(), 'sqlserver01')
+# con <- dbConnect(odbc(), 'sqlserver01')
+con <- dbConnect(odbc(), 'sqlserver01', uid = config::get()$sdb$uid, pwd = config::get()$sdb$pwd)
 
 
 # __filtering query for student list --------------------------------------
-all_elig <- tbl(con, in_schema('EDWPresentation.sec', 'ACAD_dsetEligibleToRegister')) %>%
+all_elig <- tbl(con, in_schema(sql('EDWPresentation.sec'), 'ACAD_dsetEligibleToRegister')) %>%
   filter(EligibleQtrCode == REG_YRQ) %>%
   select(SDBSrcSystemKey)
 
@@ -167,7 +168,7 @@ repeats_w_alt_grading <- courses_taken %>%
             csum_alt_grading = sum(course.alt.grading, na.rm = T))
 
 # 3) stem courses
-stem_course_data <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
+stem_course_data <- tbl(con, in_schema(sql("EDWPresentation.sec"), "dmSCH_dimCurriculumCourse")) %>%
     filter(FederalSTEMInd == "Y") %>%
     select(dept_abbrev = CurriculumCode,
            course_number = CourseNbr,
