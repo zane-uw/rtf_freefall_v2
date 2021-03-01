@@ -14,8 +14,7 @@ EOP_CODES <- c(1, 2, 13, 14, 16, 17, 31, 32, 33)
 # **SDB DATA** ----------------------------------------------------------------
 
 # !kinit
-con <- dbConnect(odbc(), 'sqlserver01', UID = config::get('sdb')$uid, PWD = config::get('sdb')$pwd)
-
+con <- dbConnect(odbc(), 'sdb', UID = config::get('sdb')$uid, PWD = config::get('sdb')$pwd)
 
 # Utility table expressions -------------------------------------------------------------------
 # calendar
@@ -53,15 +52,14 @@ get_transcript <- function(){
     semi_join(tbl(con, "##eop_temp_qry")) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
     filter(yrq >= YRQ_0,
-           yrq < local(currentq$current_yrq)) %>%       # tran_qtr != 3, add_to_cum == 1
+           yrq < local(currentq$current_yrq),
+           class <= 4) %>%       # tran_qtr != 3, add_to_cum == 1
     select(system_key,
            yrq,
            class,
            honors_program,
            tenth_day_credits,
            scholarship_type,
-           # yearly_honor_type,
-           num_ind_study,
            num_courses) %>%
     collect()
 
@@ -76,7 +74,8 @@ calc_qgpa <- function(){
     semi_join(tbl(con, "##eop_temp_qry")) %>%
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
     filter(yrq >= YRQ_0,
-           yrq < local(currentq$current_yrq)) %>%       # tran_qtr != 3, add_to_cum == 1
+           yrq < local(currentq$current_yrq),
+           class <= 4) %>%       # tran_qtr != 3, add_to_cum == 1
     select(system_key,
            yrq,
            qtr_grade_points,
@@ -88,10 +87,10 @@ calc_qgpa <- function(){
            qtr_deductible,
            over_qtr_deduct) %>%
     collect() %>%
-    mutate(pts = pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),
-           attmp = pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
-           nongrd = pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
-           deduct = pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
+    mutate(pts = if_else(over_qtr_grade_pt > 0, over_qtr_grade_pt, qtr_grade_points), # pmax(qtr_grade_points, over_qtr_grade_pt, na.rm = T),
+           attmp = if_else(over_qtr_grade_at > 0, over_qtr_grade_at, qtr_graded_attmp),  # pmax(qtr_graded_attmp, over_qtr_grade_at, na.rm = T),
+           nongrd = if_else(over_qtr_nongrd > 0, over_qtr_nongrd, qtr_nongrd_earned), # pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
+           deduct = if_else(over_qtr_deduct > 0, over_qtr_deduct, qtr_deductible), # pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
            qgpa = pts / attmp,
            tot_creds = attmp + nongrd - deduct) %>%
     select(-starts_with('over_qtr'),
@@ -339,13 +338,15 @@ get_stu_1 <- function(){
   # server version of sql doesn't support %/%
   ENR_DIV <- YRQ_0 %/% 10
   stu1 <- tbl(con, in_schema("sec", "student_1")) %>%
-    filter(last_yr_enrolled >= ENR_DIV) %>%
-    semi_join(tbl(con, "##eop_temp_qry"),
-              by = c('system_key' = 'system_key')) %>%
     select(system_key,
            s1_gender,
            uw_netid,
-           resident)
+           resident,
+           last_yr_enrolled) %>%
+    filter(last_yr_enrolled >= ENR_DIV) %>%
+    semi_join(tbl(con, "##eop_temp_qry"),
+              by = c('system_key' = 'system_key')) %>%
+    select(-last_yr_enrolled)
 
   return(stu1)
 }
@@ -395,13 +396,90 @@ stu1 <- get_stu_1() %>%
   mutate(s1_gender = ifelse(s1_gender == 'F', 1, 0)) %>%
   collect()
 
-
-
 # AGGREGATE ---------------------------------------------------------------
 # Convert `courses_taken` many-records-per-qtr to one-per
 
+courses_taken <- courses_taken %>%
+  mutate_if(is.character, trimws) %>%         # doesn't work remotely
+  # but don't want to build the course code w/ the extra white space
+  mutate(course = paste(dept_abbrev, course_number, sep = "_"),
+         duplicate_indic = as.numeric(duplicate_indic),
+         numeric_grade = recode(grade,
+                                "A"  = "40",
+                                "A-" = "38",
+                                "B+" = "34",
+                                "B"  = "31",
+                                "B-" = "28",
+                                "C+" = "24",
+                                "C"  = "21",
+                                "C-" = "18",
+                                "D+" = "14",
+                                "D"  = "11",
+                                "D-" = "08",
+                                "E"  = "00",
+                                "F"  = "00"),
+         numeric_grade = as.numeric(numeric_grade) / 10,
+         course_withdraw = if_else(grepl("W", grade), 1, 0),
+         course_nogpa = if_else(grade %in% c("", "CR", "H", "HP", "HW", "I", "N", "NC", "NS", "P", "S", "W", "W3", "W4", "W5", "W6", "W7"), 1, 0),
+         course_alt_grading = if_else(grade %in% c('CR', 'S', 'NS', 'P', 'HP', 'NC'), 1, 0))
 
+# repeats, alternate grading
+rep_courses_alt_grading <- courses_taken %>%
+    arrange(system_key, yrq) %>%
+    group_by(system_key, yrq) %>%
+    summarize(rep_courses = sum(repeat_course),
+              n_w = sum(course_withdraw),
+              n_alt_grading = sum(course_alt_grading)) %>%
+    group_by(system_key, .add = F) %>%
+    mutate(csum_rep_courses = cumsum(rep_courses),
+           csum_w = cumsum(n_w),
+           csum_alt_grading = cumsum(n_alt_grading)) %>%
+    ungroup()
 
+  # dept-wise courses, grades, etc (v. wide)
+  # agg/reduce to 1 row per student + yrq + dept_abbr
+  # then pivot wide
+  create.stu.dept.wide <- function(percent = 0.9){
+    stu.deptwise.data <- courses.taken %>%
+      group_by(system_key, yrq, dept_abbrev) %>%
+      summarize(sgrade = sum(numeric.grade, na.rm = T),
+                n = n(),
+                creds.dept = sum(course_credits, na.rm = T)) %>%
+      ungroup() %>%
+      arrange(system_key, dept_abbrev, yrq) %>%
+      group_by(system_key, dept_abbrev) %>%
+      mutate(csum.grade = cumsum(sgrade),
+             nclass.dept = cumsum(n),
+             cumavg.dept = csum.grade / nclass.dept,
+             csum.dept.creds = cumsum(creds.dept)) %>%
+      ungroup() %>%
+      select(system_key, dept_abbrev, yrq, cumavg.dept, nclass.dept, csum.dept.creds) %>%
+      arrange(system_key, yrq, dept_abbrev)
+
+    create.stem.data <- function(){
+      result <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
+        filter(FederalSTEMInd == "Y") %>%
+        select(dept_abbrev = CurriculumCode,
+               course_number = CourseNbr,
+               course_level = CourseLevelNbr,
+               cip = CIPCode) %>%
+        distinct() %>%
+        collect() %>%
+        mutate_if(is.character, trimws) %>%
+        mutate(course = paste(dept_abbrev, course_number, sep = "_"),
+               is.stem = 1) %>%
+        right_join( select(.data = courses.taken, system_key, yrq, course, numeric.grade, course_credits) ) %>%
+        arrange(system_key, yrq) %>%
+        group_by(system_key, yrq) %>%
+        summarize(stem.courses = sum(is.stem, na.rm = T),
+                  stem.credits = sum(course_credits * is.stem, na.rm = T),
+                  avg.stem.grade = mean(numeric.grade * is.stem, na.rm = T)) %>%
+        group_by(system_key, add = F) %>%
+        mutate(csum.stem.courses = cumsum(stem.courses),
+               csum.stem.credits = cumsum(stem.credits),
+               avg.stem.grade = ifelse(is.nan(avg.stem.grade), NA, avg.stem.grade)) %>%
+        ungroup()
+}
 
 # TRANSFORM, LAGS, etc --------------------------------------------------------
 # variables that need to be lagged include anything that wouldn't be visible before the end of term
