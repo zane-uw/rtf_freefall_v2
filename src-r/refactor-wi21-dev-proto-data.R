@@ -53,7 +53,8 @@ get_transcript <- function(){
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
     filter(yrq >= YRQ_0,
            yrq < local(currentq$current_yrq),
-           class <= 4) %>%       # tran_qtr != 3, add_to_cum == 1
+           class <= 4,
+           (tenth_day_credits > 0 & num_courses > 0)) %>%       # tran_qtr != 3, add_to_cum == 1
     select(system_key,
            yrq,
            class,
@@ -61,7 +62,7 @@ get_transcript <- function(){
            tenth_day_credits,
            scholarship_type,
            num_courses) %>%
-    collect()
+    collect() %>%
 
   return(transcript)
 }
@@ -75,7 +76,8 @@ calc_qgpa <- function(){
     mutate(yrq = tran_yr*10 + tran_qtr) %>%
     filter(yrq >= YRQ_0,
            yrq < local(currentq$current_yrq),
-           class <= 4) %>%       # tran_qtr != 3, add_to_cum == 1
+           class <= 4,
+           (tenth_day_credits > 0 & num_courses > 0)) %>%       # tran_qtr != 3, add_to_cum == 1
     select(system_key,
            yrq,
            qtr_grade_points,
@@ -158,6 +160,8 @@ get_courses_taken <- function(){
 
   return(tr_courses_taken)
 }
+
+
 
 # Majors, dual majors ------------------------------------------------------------------
 
@@ -381,7 +385,6 @@ calc_adjusted_age <- function(){
 #     cum.attmp = cumsum(attmp),
 #    cum.gpa = cum.pts / cum.attmp) %>%
 
-
 transcript <- get_transcript()
 qgpa <- calc_qgpa()
 courses_taken <- get_courses_taken()
@@ -396,7 +399,7 @@ stu1 <- get_stu_1() %>%
   mutate(s1_gender = ifelse(s1_gender == 'F', 1, 0)) %>%
   collect()
 
-# AGGREGATE ---------------------------------------------------------------
+# AGGREGATE courses taken ---------------------------------------------------------------
 # Convert `courses_taken` many-records-per-qtr to one-per
 
 courses_taken <- courses_taken %>%
@@ -423,76 +426,123 @@ courses_taken <- courses_taken %>%
          course_nogpa = if_else(grade %in% c("", "CR", "H", "HP", "HW", "I", "N", "NC", "NS", "P", "S", "W", "W3", "W4", "W5", "W6", "W7"), 1, 0),
          course_alt_grading = if_else(grade %in% c('CR', 'S', 'NS', 'P', 'HP', 'NC'), 1, 0))
 
-# repeats, alternate grading
-rep_courses_alt_grading <- courses_taken %>%
-    arrange(system_key, yrq) %>%
-    group_by(system_key, yrq) %>%
-    summarize(rep_courses = sum(repeat_course),
-              n_w = sum(course_withdraw),
-              n_alt_grading = sum(course_alt_grading)) %>%
-    group_by(system_key, .add = F) %>%
-    mutate(csum_rep_courses = cumsum(rep_courses),
-           csum_w = cumsum(n_w),
-           csum_alt_grading = cumsum(n_alt_grading)) %>%
-    ungroup()
+# repeats, alternate grading, fees, etc.
+aggr_courses_taken <- courses_taken %>%
+  arrange(system_key, yrq) %>%
+  group_by(system_key, yrq) %>%
+  summarize(rep_courses = sum(repeat_course),
+            n_w = sum(course_withdraw),
+            n_alt_grading = sum(course_alt_grading),
+            # grade_lo = min(numeric_grade, na.rm = T),
+            # grade_hi = max(numeric_grade, na.rm = T),
+            grade_var = var(numeric_grade, na.rm = T),
+            sum_fees = sum(fee_amount, na.rm = T),
+            avg_course_size = mean(current_enroll, na.rm = T)) %>%
+  group_by(system_key, .add = F) %>%
+  mutate(csum_rep_courses = cumsum(rep_courses),
+         csum_w = cumsum(n_w),
+         csum_alt_grading = cumsum(n_alt_grading)) %>%
+  ungroup()
+# aggr_courses_taken$grade_var[is.infinite(aggr_courses_taken$grade_var)] <- NA
 
-  # dept-wise courses, grades, etc (v. wide)
-  # agg/reduce to 1 row per student + yrq + dept_abbr
-  # then pivot wide
-  create.stu.dept.wide <- function(percent = 0.9){
-    stu.deptwise.data <- courses.taken %>%
-      group_by(system_key, yrq, dept_abbrev) %>%
-      summarize(sgrade = sum(numeric.grade, na.rm = T),
-                n = n(),
-                creds.dept = sum(course_credits, na.rm = T)) %>%
-      ungroup() %>%
-      arrange(system_key, dept_abbrev, yrq) %>%
-      group_by(system_key, dept_abbrev) %>%
-      mutate(csum.grade = cumsum(sgrade),
-             nclass.dept = cumsum(n),
-             cumavg.dept = csum.grade / nclass.dept,
-             csum.dept.creds = cumsum(creds.dept)) %>%
-      ungroup() %>%
-      select(system_key, dept_abbrev, yrq, cumavg.dept, nclass.dept, csum.dept.creds) %>%
-      arrange(system_key, yrq, dept_abbrev)
+  # # dept-wise courses, grades, etc (v. wide)
+  # # agg/reduce to 1 row per student + yrq + dept_abbr
+  # # then pivot wide
+  # create.stu.dept.wide <- function(percent = 0.9){
+  #   stu.deptwise.data <- courses.taken %>%
+  #     group_by(system_key, yrq, dept_abbrev) %>%
+  #     summarize(sgrade = sum(numeric.grade, na.rm = T),
+  #               n = n(),
+  #               creds.dept = sum(course_credits, na.rm = T)) %>%
+  #     ungroup() %>%
+  #     arrange(system_key, dept_abbrev, yrq) %>%
+  #     group_by(system_key, dept_abbrev) %>%
+  #     mutate(csum.grade = cumsum(sgrade),
+  #            nclass.dept = cumsum(n),
+  #            cumavg.dept = csum.grade / nclass.dept,
+  #            csum.dept.creds = cumsum(creds.dept)) %>%
+  #     ungroup() %>%
+  #     select(system_key, dept_abbrev, yrq, cumavg.dept, nclass.dept, csum.dept.creds) %>%
+  #     arrange(system_key, yrq, dept_abbrev)
 
-    create.stem.data <- function(){
-      result <- tbl(con, in_schema("EDWPresentation.sec", "dmSCH_dimCurriculumCourse")) %>%
-        filter(FederalSTEMInd == "Y") %>%
-        select(dept_abbrev = CurriculumCode,
-               course_number = CourseNbr,
-               course_level = CourseLevelNbr,
-               cip = CIPCode) %>%
-        distinct() %>%
-        collect() %>%
-        mutate_if(is.character, trimws) %>%
-        mutate(course = paste(dept_abbrev, course_number, sep = "_"),
-               is.stem = 1) %>%
-        right_join( select(.data = courses.taken, system_key, yrq, course, numeric.grade, course_credits) ) %>%
-        arrange(system_key, yrq) %>%
-        group_by(system_key, yrq) %>%
-        summarize(stem.courses = sum(is.stem, na.rm = T),
-                  stem.credits = sum(course_credits * is.stem, na.rm = T),
-                  avg.stem.grade = mean(numeric.grade * is.stem, na.rm = T)) %>%
-        group_by(system_key, add = F) %>%
-        mutate(csum.stem.courses = cumsum(stem.courses),
-               csum.stem.credits = cumsum(stem.credits),
-               avg.stem.grade = ifelse(is.nan(avg.stem.grade), NA, avg.stem.grade)) %>%
-        ungroup()
-}
+# STEM courses/grades -----------------------------------------------------
+# join w/ courses taken data
+stem_data <- tbl(con, in_schema(sql("EDWPresentation.sec"), "dmSCH_dimCurriculumCourse")) %>%
+  filter(FederalSTEMInd == "Y") %>%
+  select(dept_abbrev = CurriculumCode,
+         course_number = CourseNbr,
+         course_level = CourseLevelNbr,
+         cip = CIPCode) %>%
+  distinct() %>%
+  collect() %>%
+  mutate_if(is.character, trimws) %>%
+  mutate(course = paste(dept_abbrev, course_number, sep = "_"),
+         is_stem = 1) %>%
+  right_join( select(.data = courses_taken, system_key, yrq, course, numeric_grade, course_credits) ) %>%
+  arrange(system_key, yrq) %>%
+  group_by(system_key, yrq) %>%
+  summarize(stem_courses = sum(is_stem, na.rm = T),
+            stem_credits = sum(course_credits * is_stem, na.rm = T),
+            avg_stem_grade = mean(numeric_grade * is_stem, na.rm = T)) %>%
+  group_by(system_key, add = F) %>%
+  mutate(csum_stem_courses = cumsum(stem_courses),
+         csum_stem_credits = cumsum(stem_credits),
+         avg_stem_grade = ifelse(is.nan(avg_stem_grade), NA, avg_stem_grade)) %>%
+  ungroup()
+
+
 
 # TRANSFORM, LAGS, etc --------------------------------------------------------
 # variables that need to be lagged include anything that wouldn't be visible before the end of term
 
-# # 1) mutate transcripts
-# transcript <- transcript %>%
-#   group_by(system_key, yrq) %>%
-#   arrange(system_key, yrq) %>%
-#   mutate(qtr_seq = )
+# 1) mutate transcripts
+# to create quarter/time sequence; technically this may not be correct since the baseline measures from 20154, not
+# necessarily the very first transcripted year
+transcript <- transcript %>%
+  group_by(system_key) %>%
+  arrange(system_key, yrq) %>%
+  mutate(n_quarters = row_number(),
+         csum_courses = cumsum(num_courses)) %>%
+  ungroup()
 
 
+# 2) Majors - derived fields
+# premajors, ext_premajor
+majors$ext_premajor <- if_else(majors$tran_major_abbr == 'EPRMJ', 1, 0)
+majors$premajor <- if_else(grepl('PRE', majors$tran_major_abbr), 1, 0)
+majors$nonmatr <- if_else(majors$tran_major_abbr == 'N MATR', 1, 0)
+
+
+# 3) lags
+lag_aggr_courses_taken <- aggr_courses_taken %>%
+  group_by(system_key) %>%
+  arrange(system_key, yrq) %>%
+  mutate_at(.vars = vars(n_w, grade_var, csum_w, csum_alt_grading), list(lag = lag)) %>%
+  ungroup() %>%
+  select(system_key,
+         yrq,
+         rep_courses,
+         n_alt_grading,
+         sum_fees,
+         avg_course_size,
+         csum_rep_courses,
+         ends_with("_lag"))
+
+lag_qgpa <- qgpa %>%
+  group_by(system_key) %>%
+  arrange(system_key, yrq) %>%
+  mutate_at(.vars = vars(pts, nongrd, deduct, qgpa, tot_creds), list(lag = lag)) %>%
+  ungroup() %>%
+  select(system_key,
+         yrq,
+         attmp,
+         ends_with('_lag'))
 
 
 # JOIN --------------------------------------------------------------------
 
-
+dat <- transcript %>%
+  left_join(majors) %>%
+  left_join(stu1) %>%
+  left_join(qgpa) %>%
+  left_join()
