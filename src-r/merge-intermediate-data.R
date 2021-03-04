@@ -11,8 +11,10 @@ setwd(rstudioapi::getActiveProject())
 can_au20 <- read_csv('data-intermediate/canvas-au20.csv')
 can_sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
 can_su20 <- read_csv('data-intermediate/canvas-su20.csv')
-can_long_raw <- bind_rows(can_au20, can_sp20, can_su20)
-rm(can_au20, can_sp20, can_su20)
+can_wi21 <- read_csv('data-intermediate//canvas-wi21.csv')
+can_long_raw <- bind_rows(can_au20, can_sp20, can_su20, can_wi21)
+# rm(can_au20, can_sp20, can_su20, )
+rm(list = ls()[!grepl('long', ls())])
 
 
 # Widen canvas ------------------------------------------------------------
@@ -24,17 +26,16 @@ rm(can_au20, can_sp20, can_su20)
 #                                    names_prefix = 'wk')
 
 
+# ? Filtering out students who don't appear in the canvas data at all
+sdb_dat <- read_csv('data-intermediate/sdb_eop_isso_wi21.csv') # %>%
+  # filter(system_key %in% unique(can_long_raw$system_key))
 
-# Need to split the canvas data up based on what we can/can't know and lag a subset of variables
-# First filtering by the canvas data to reduce some overhead
-sdb_dat <- read_csv('data-intermediate/refac-au20-eop-sdb-data.csv') %>%
-  filter(system_key %in% unique(can_long_raw$system_key)) %>%
-  select(-num_ind_study, -extpremajor)
-
-# Then reduce canvas to EOP students
+# Reduce canvas to EOP+ISS students
 # This current setup requires aggregating the canvas data
-can_long_aggr <- can_long_raw %>%
-  semi_join(sdb_dat, by = c('system_key' = 'system_key')) %>%
+can_long_eop_iss <- can_long_raw %>%
+  semi_join(sdb_dat, by = c('system_key' = 'system_key'))
+
+# %>%
   group_by(system_key, user_id, yrq, week) %>%
   summarize_at(vars(page_views,
                     page_views_level,

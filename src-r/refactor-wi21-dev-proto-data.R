@@ -202,6 +202,20 @@ get_major_data <- function(){
                                    majors$system_key,
                                    function(x) { rep(seq_along(rle(x)$lengths), times = rle(x)$lengths) }))
 
+  # add EDW stem to major codes
+  stem_codes <- tbl(con, in_schema(sql('EDWPresentation.sec'), 'dimCIPCurrent')) %>%
+    select(CIPCode,
+           FederalSTEMInd) %>%
+    filter(FederalSTEMInd == "Y") %>%
+    inner_join( select(.data = tbl(con, in_schema('sec', 'sr_major_code')), major_abbr, major_cip_code),
+                by = c('CIPCode' = 'major_cip_code'),
+                copy = T) %>%
+    distinct() %>%
+    collect()
+
+  majors <- majors %>%
+    mutate(stem_major = if_else(tran_major_abbr %in% stem_codes$major_abbr, 1, 0))
+
   return(majors)
 }
 
@@ -275,7 +289,7 @@ get_holds <- function(){
     inner_join(cal, by = c('hold_dt' = 'dt')) %>%
     collect() %>%
     group_by(system_key, yrq) %>%
-    summarize(n.holds = n()) %>%
+    summarize(n_holds = n()) %>%
     ungroup() %>%
     mutate(yrq = as.numeric(yrq))
 
@@ -487,8 +501,10 @@ stem_data <- tbl(con, in_schema(sql("EDWPresentation.sec"), "dmSCH_dimCurriculum
   group_by(system_key, add = F) %>%
   mutate(csum_stem_courses = cumsum(stem_courses),
          csum_stem_credits = cumsum(stem_credits),
-         avg_stem_grade = ifelse(is.nan(avg_stem_grade), NA, avg_stem_grade)) %>%
-  ungroup()
+         avg_stem_grade = ifelse(is.nan(avg_stem_grade), NA, avg_stem_grade),
+         avg_stem_grade_lag = lag(avg_stem_grade)) %>%
+  ungroup() %>%
+    select(-avg_stem_grade)
 
 
 
@@ -502,8 +518,11 @@ transcript <- transcript %>%
   group_by(system_key) %>%
   arrange(system_key, yrq) %>%
   mutate(n_quarters = row_number(),
-         csum_courses = cumsum(num_courses)) %>%
-  ungroup()
+         csum_courses = cumsum(num_courses),
+         scholarship_type_lag = lag(scholarship_type)) %>%
+  ungroup() %>%
+  select(-scholarship_type)
+
 
 
 # 2) Majors - derived fields
@@ -543,6 +562,13 @@ lag_qgpa <- qgpa %>%
 
 dat <- transcript %>%
   left_join(majors) %>%
+  left_join(stem_data) %>%
   left_join(stu1) %>%
-  left_join(qgpa) %>%
-  left_join()
+  left_join(lag_qgpa) %>%
+  left_join(lag_aggr_courses_taken) %>%
+  left_join(holds) %>%
+  left_join(late_reg) %>%
+  left_join(stu_age) %>%
+  left_join(unmet_reqs)
+
+write_csv(dat, 'data-intermediate/sdb_eop_isso_wi21.csv')

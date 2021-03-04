@@ -27,7 +27,7 @@ optls <- list(make_option(c('--term'),
                             Will raise an error if `project/data-intermediate` does not exist [default = %default]'),
               make_option(c('--dns'),
                           type = 'character',
-                          default = 'sqlserver01',
+                          default = 'sdb',
                           help = 'Name of your DNS [default = %default]'))
 optprs <- OptionParser(option_list = optls)
 opts <- parse_args(optprs)
@@ -52,7 +52,7 @@ if (!file.exists('data-intermediate/')){
 # Canvas helper functions -------------------------------------------------
 # req'd to connect id keys
 get_edw_keys <- function(){
-  con <- dbConnect(odbc(), opts$dns)
+  con <- dbConnect(odbc(), opts$dns, uid = config::get()$sdb$uid, pwd = config::get()$sdb$pwd)
   skeys <- tbl(con, in_schema('sec', 'student_1')) %>%
     select(system_key, uw_netid) %>%
     collect() %>%
@@ -64,8 +64,8 @@ get_edw_keys <- function(){
 
 # fetch calendar weeks
 fetch_cal_wks <- function(){
-  con <- dbConnect(odbc(), opts$dns)
-  res <- tbl(con, in_schema('EDWPresentation.sec', 'dimDate')) %>%
+  con <- dbConnect(odbc(), opts$dns, uid = config::get()$sdb$uid, pwd = config::get()$sdb$pwd)
+  res <- tbl(con, in_schema(sql('EDWPresentation.sec'), 'dimDate')) %>%
     filter(AcademicYrQtrCode >= 20202) %>%
     select(AcademicYrQtrCode,
            AcademicQtrWeekNum,
@@ -161,8 +161,8 @@ create_data_file_from_canvas <- function(term = TERM){
 
   WKS <- seq_along(dirlist)
 
-  PROV_USR_PATH <- '~/Google Drive File Stream/My Drive/canvas-data/users.csv'
-  PROV_CRS_PATH <- paste0('~/Google Drive File Stream/My Drive/canvas-data/courses_', TERM, '.csv')
+  PROV_USR_PATH <- '~/Google Drive/My Drive/canvas-data/users.csv'
+  PROV_CRS_PATH <- paste0('~/Google Drive/My Drive/canvas-data/courses_', term, '.csv')
 
   # read provisioning; these currently need periodic updates
   prov_usrs <- read_csv(PROV_USR_PATH, col_types = 'nc--c------cc') %>% filter(status == 'active', created_by_sis == 'true') %>% select(-status, -created_by_sis)
@@ -173,7 +173,7 @@ create_data_file_from_canvas <- function(term = TERM){
   # and pass the value to the merge fun from above.
   # Then we can merge, cleanup, aggregate, etc.
   a_all <- lapply(seq_along(dirlist), function(i) mrg_assgn(dirlist[[i]], WKS[[i]]))   # I have no idea why this behaves differently and tends to crash my desktop but runs in seconds on laptop...
-  # we could probably avoid the dirlist entirely with map() or mapply()
+  # could probably avoid the dirlist entirely with map() or mapply()
   p_all <- lapply(seq_along(dirlist), function(i) mrg_partic(dirlist[i], WKS[i]))
   a_all <- bind_rows(a_all)
   p_all <- bind_rows(p_all)
