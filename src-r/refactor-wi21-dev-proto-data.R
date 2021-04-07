@@ -26,7 +26,10 @@ currentq <- tbl(con, in_schema("sec", "sdbdb01")) %>%
   mutate(current_yrq = current_yr*10 + current_qtr,
          regis_yrq = gl_regis_year*10 + gl_regis_qtr)
 
-db.eop <- tbl(con, in_schema("sec", "transcript")) %>%
+cat('current quarter result:', names(currentq), fill = T)
+cat("------", unlist(currentq), fill = T)
+
+undb.eop <- tbl(con, in_schema("sec", "transcript")) %>%
   filter(special_program %in% EOP_CODES) %>%
   select(system_key) %>%
   full_join( tbl(con, in_schema('sec', 'registration')) %>%
@@ -94,7 +97,9 @@ calc_qgpa <- function(){
            nongrd = if_else(over_qtr_nongrd > 0, over_qtr_nongrd, qtr_nongrd_earned), # pmax(qtr_nongrd_earned, over_qtr_nongrd, na.rm = T),
            deduct = if_else(over_qtr_deduct > 0, over_qtr_deduct, qtr_deductible), # pmax(qtr_deductible, over_qtr_deduct, na.rm = T),
            qgpa = pts / attmp,
-           tot_creds = attmp + nongrd - deduct) %>%
+           tot_creds = attmp + nongrd,
+           # correction for div 0 error w/ pts / attmp
+           ) %>%
     select(-starts_with('over_qtr'),
            -qtr_grade_points,
            -qtr_graded_attmp,
@@ -379,7 +384,7 @@ calc_adjusted_age <- function(){
     mutate(table_key = paste0('0', as.character(regis_yr), as.character(regis_qtr), ' '))
 
   result <- tbl(con, in_schema('sec', 'sys_tbl_39_calendar')) %>%
-    filter(first_day >= '2020-01-01') %>%
+    filter(first_day >= '2000-01-01') %>%
     select(table_key, tenth_day) %>%
     inner_join(bd) %>%
     collect() %>%
@@ -571,4 +576,4 @@ dat <- transcript %>%
   left_join(stu_age) %>%
   left_join(unmet_reqs)
 
-write_csv(dat, 'data-intermediate/sdb_eop_isso_wi21.csv')
+write_csv(dat, 'data-intermediate/sdb_eop_isso_sp21.csv')

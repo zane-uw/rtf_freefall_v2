@@ -7,16 +7,20 @@ library(dbplyr)
 
 make_aggr_yvar <- function(){
 
-  con <- dbConnect(odbc(), 'sqlserver01')
+  con <- dbConnect(odbc(), 'sdb', UID = config::get('sdb')$uid, PWD = config::get('sdb')$pwd)
 
   eop <- tbl(con, in_schema('sec', 'student_1')) %>%
     filter(spcl_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
     select(system_key) %>%
     full_join( tbl(con, in_schema('sec', 'transcript')) %>%
                  filter(special_program %in% c(1, 2, 13, 14, 16, 17, 31, 32, 33)) %>%
-                 select(system_key) %>%
-                 distinct()
+                 select(system_key)
                ) %>%
+    # ADD ISS students
+    full_join( tbl(con, in_schema('sec', 'student_1_college_major')) %>%
+                 filter(major_abbr == "ISS O") %>%
+                 select(system_key)
+    ) %>%
     distinct()
 
   course_grades <- tbl(con, in_schema('sec', 'transcript_courses_taken')) %>%
@@ -53,4 +57,4 @@ make_aggr_yvar <- function(){
   return(course_grades)
 }
 
-make_aggr_yvar() %>% write_csv('data-prepped/eop-aggr-yvar.csv')
+make_aggr_yvar() %>% write_csv('data-prepped/eop-isso-aggr-yvar.csv')

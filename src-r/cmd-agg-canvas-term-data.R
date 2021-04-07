@@ -41,7 +41,7 @@ if (is.null(opts$term)){
 }
 
 setwd(opts$dir)
-TERM = opts$term
+TERM <- opts$term
 
 if (!file.exists('data-intermediate/')){
   stop('./data-intermediate/ folder not found, are you sure this is the right directory?')

@@ -11,7 +11,7 @@ setwd(rstudioapi::getActiveProject())
 can_au20 <- read_csv('data-intermediate/canvas-au20.csv')
 can_sp20 <- read_csv('data-intermediate/canvas-sp20.csv')
 can_su20 <- read_csv('data-intermediate/canvas-su20.csv')
-can_wi21 <- read_csv('data-intermediate//canvas-wi21.csv')
+can_wi21 <- read_csv('data-intermediate/canvas-wi21.csv')
 can_long_raw <- bind_rows(can_au20, can_sp20, can_su20, can_wi21)
 # rm(can_au20, can_sp20, can_su20, )
 rm(list = ls()[!grepl('long', ls())])
@@ -69,23 +69,23 @@ can_wide_aggr <- can_long_aggr %>%
 
 # Gen lags and subset data ------------------------------------------------
 
-# now create lag vars and subset years
-lvars <- c('honors_program',
-           'scholarship_type',
-           'yearly_honor_type',
-           'pts',
-           'nongrd',
-           'deduct',
-           'qgpa',
-           'tot_creds',
-           'qgpa15',
-           'qgpa20',
-           'probe',
-           'cum.pts',
-           'cum.gpa',
-           'n.w',
-           'csum.w',
-           'avg.stem.grade')
+# # now create lag vars and subset years
+# lvars <- c('honors_program',
+#            'scholarship_type',
+#            'yearly_honor_type',
+#            'pts',
+#            'nongrd',
+#            'deduct',
+#            'qgpa',
+#            'tot_creds',
+#            'qgpa15',
+#            'qgpa20',
+#            'probe',
+#            'cum.pts',
+#            'cum.gpa',
+#            'n.w',
+#            'csum.w',
+#            'avg.stem.grade')
 sdb_dat <- sdb_dat %>%
   group_by(system_key) %>%
   arrange(system_key, yrq) %>%
